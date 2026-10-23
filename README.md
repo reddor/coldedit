@@ -23,10 +23,11 @@ Drop a WAV, FLAC or MP3 onto the window, or click **ColdEdit > Open audio**.
 The editor starts empty until you open your audio.
 
 A WebAssembly build is also available in `dist/Web` and `dist/ColdEdit-web.zip`.
-It runs locally in a desktop browser, with a **64 MiB input limit** and a
+It runs locally in your browser, with a **64 MiB input limit** and a
 **128 MiB shared audio memory budget** and **128 MiB export limit**, and links to GitHub Releases for native downloads for
 larger recordings. See [WEB.md](WEB.md) for running, building, hosting, and
-browser-specific memory behavior.
+browser-specific memory behavior. Smaller screens use a compact toolbar and a
+**Tools** panel, with touch selection and zoom buttons.
 
 ```powershell
 .\build\coldedit.exe 'C:\Audio\recording.wav'

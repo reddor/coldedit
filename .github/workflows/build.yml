@@ -108,7 +108,7 @@ jobs:
         run: >-
           node tests/run-web-tests.cjs
           web-smoke.cjs web-lifecycle.cjs web-toolbar.cjs web-wheel.cjs
-          web-features.cjs web-cleanup.cjs web-selection.cjs web-codecs.cjs web-mp3.cjs
+          web-features.cjs web-cleanup.cjs web-selection.cjs web-codecs.cjs web-mp3.cjs web-mobile.cjs
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages-web

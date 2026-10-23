@@ -1,10 +1,16 @@
 :root{color-scheme:dark;font:14px/1.5 system-ui,sans-serif;background:#101419;color:#e1e7ec}
 *{box-sizing:border-box}body{margin:0}a{color:#62dec1;text-underline-offset:3px}a:hover{color:#b0f5e4}
-.web-bar{height:44px;min-width:960px;padding:0 24px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #2b323b;background:#161b21;gap:24px;font-size:12px}.web-bar strong{font-weight:600}.limits{color:#8794a1}
-#editor-container{position:relative;width:100%;min-width:960px;height:calc(100dvh - 44px);min-height:660px;overflow:hidden}
+.web-bar{height:44px;padding:0 24px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #2b323b;background:#161b21;gap:24px;font-size:12px}.web-bar strong{font-weight:600}.limits{color:#8794a1}
+#editor-container{position:relative;width:100%;height:calc(100dvh - 44px);min-height:300px;overflow:hidden}
 /* GLFW writes inline pixel sizes. Layout belongs to CSS; the backing store is
    sized independently to the browser's exact device-pixel content box. */
 #canvas{display:block;width:100%!important;height:100%!important;outline:none;touch-action:none}#canvas.dragging{outline:2px solid #62dec1;outline-offset:-4px}
 .overlay{position:absolute;inset:0;display:grid;place-items:center;background:#101419}.overlay[hidden]{display:none}
 .card{max-width:540px;padding:40px;text-align:center}.mark{font-size:38px;letter-spacing:5px;color:#62dec1}h1{font-size:27px;font-weight:500}.card p{color:#8794a1;white-space:pre-line}.card a{display:inline-block;margin-top:20px}
 #notice{position:fixed;bottom:48px;left:24px;right:24px;max-width:850px;z-index:3;background:#243431;border:1px solid #537f73;border-radius:8px;padding:16px 45px 16px 20px;box-shadow:0 8px 32px #0006;display:flex;gap:18px;align-items:center}#notice[hidden],#download-export[hidden]{display:none}#notice-text{flex:1}#notice a{white-space:nowrap}#dismiss{position:absolute;right:10px;top:7px;border:0;background:none;color:#e1e7ec;font-size:24px;cursor:pointer}
+@media(max-width:959px){
+  .web-bar{padding:0 12px;gap:12px}.web-bar .limits{display:none}.web-bar>a{font-size:11px;white-space:nowrap}
+  .card{max-width:100%;padding:24px}h1{font-size:23px}
+  #notice{left:12px;right:12px;bottom:12px;flex-wrap:wrap;gap:10px;padding:16px 44px 16px 16px;max-height:50dvh;overflow:auto}
+  #notice-text{flex-basis:100%}#notice a{padding:8px 0}#dismiss{width:40px;height:40px;top:0;right:0}
+}

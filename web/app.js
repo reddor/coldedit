@@ -125,7 +125,7 @@ window.addEventListener('keydown', event => {
 if (!window.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
   window.coldeditWeb.fail('This server needs cross-origin isolation to run the editor. Use the included local server or configure COOP/COEP headers.');
 } else if (!window.WebAssembly) {
-  window.coldeditWeb.fail('WebAssembly is required. Please use a current desktop browser.');
+  window.coldeditWeb.fail('WebAssembly is required. Please use a current browser.');
 } else {
   const script = document.createElement('script'); script.src = 'coldedit.js';
   script.onerror = () => window.coldeditWeb.fail('Could not load the editor. Reload the page or try the native app.');

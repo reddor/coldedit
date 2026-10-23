@@ -131,14 +131,15 @@ bool Editor::iconButton(const char* id, int icon, bool active, const char* toolt
 }
 bool Editor::toolButton(const char* id, ToolIcon icon, const char* caption, const std::string& tooltip, bool enabled, bool active) {
     const auto p = logical(ImGui::GetCursorScreenPos());
-    const float width = *caption ? 39 + ImGui::CalcTextSize(caption).x / dpi_.layout : 34;
+    const float height = compact_ ? 44.f : 34.f;
+    const float width = *caption ? 39 + ImGui::CalcTextSize(caption).x / dpi_.layout : height;
     ImGui::BeginDisabled(!enabled);
     ImGui::PushStyleColor(ImGuiCol_Button, active ? ImVec4(.17f, .30f, .29f, 1) : ImVec4(0, 0, 0, 0));
-    const bool pressed = button(id, {width, 34});
+    const bool pressed = button(id, {width, height});
     ImGui::PopStyleColor();
     const ImU32 color = ImGui::GetColorU32(active ? ImGuiCol_CheckMark : ImGuiCol_Text);
     auto d = drawList();
-    const float x = p.x + 17, y = p.y + 17;
+    const float x = p.x + height * .5f, y = p.y + height * .5f;
     auto stroke = [&](float ax, float ay, float bx, float by) { d.AddLine({x + ax, y + ay}, {x + bx, y + by}, color, 1.5f); };
     auto box = [&](float ax, float ay, float bx, float by) { d.AddRect({x + ax, y + ay}, {x + bx, y + by}, color, 1, 0, 1.5f); };
     switch (icon) {
@@ -434,7 +435,8 @@ void Editor::shortcuts() {
 }
 void Editor::header(float width) {
     auto d = drawList();
-    d.AddRectFilled({0, 0}, {width, 64}, panel); d.AddLine({0, 64}, {width, 64}, line);
+    const float headerHeight = compact_ ? 118.f : 64.f;
+    d.AddRectFilled({0, 0}, {width, headerHeight}, panel); d.AddLine({0, headerHeight}, {width, headerHeight}, line);
     ImGui::SetCursorPos(px({16, 12}));
     const bool menuOpen = ImGui::IsPopupOpen("Main menu");
     ImGui::PushStyleColor(ImGuiCol_Button, menuOpen ? ImVec4(.17f, .30f, .29f, 1) : ImVec4(0, 0, 0, 0));
@@ -449,6 +451,28 @@ void Editor::header(float width) {
         (!ImGui::GetIO().WantTextInput && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && ImGui::IsKeyPressed(ImGuiKey_F10, false)))
         ImGui::OpenPopup("Main menu");
     mainMenu();
+    if (compact_) {
+        ImGui::SetCursorPos(px({168, 12}));
+        if (iconButton("play", playback_.playing() ? 1 : 0, true, "Play / pause")) togglePlay();
+        ImGui::SetCursorPos(px({width - 84, 12}));
+        if (button(compactTools_ ? "Back" : "Tools", {72, 40})) compactTools_ = !compactTools_;
+        const auto t = document_.timeline();
+        const bool ready = t && !busy_;
+        const bool paste = ready && !clipboard_.empty() && clipboardRate_ == t->sampleRate && clipboardChannels_ == t->channels;
+        ImGui::SetCursorPos(px({12, 68}));
+        if (toolButton("##undo", ToolIcon::Undo, "", "Undo", ready && document_.canUndo())) action("undo");
+        ImGui::SameLine(0, px(4));
+        if (toolButton("##redo", ToolIcon::Redo, "", "Redo", ready && document_.canRedo())) action("redo");
+        ImGui::SameLine(0, px(4));
+        if (toolButton("##cut", ToolIcon::Cut, "", "Cut selection", ready && selected())) action("cut");
+        ImGui::SameLine(0, px(4));
+        if (toolButton("##paste", ToolIcon::Paste, "", "Paste", paste)) action("paste");
+        ImGui::BeginDisabled(!ready);
+        ImGui::SameLine(0, px(4)); if (button("-", {44, 44})) { follow_ = false; view_.zoom(1.5, .5); }
+        ImGui::SameLine(0, px(4)); if (button("+", {44, 44})) { follow_ = false; view_.zoom(.65, .5); }
+        ImGui::EndDisabled();
+        return;
+    }
     d.AddLine({176, 22}, {176, 42}, line);
     transport();
     d.AddLine({396, 22}, {396, 42}, line);
@@ -483,12 +507,12 @@ void Editor::mainMenu() {
     const bool selection = ready && selected();
     const bool paste = ready && !clipboard_.empty() && clipboardRate_ == t->sampleRate && clipboardChannels_ == t->channels;
     ImGui::SetNextWindowPos(px({16, 58}));
-    ImGui::SetNextWindowSizeConstraints(px({280, 0}), {FLT_MAX, FLT_MAX});
+    ImGui::SetNextWindowSizeConstraints(px({280, 0}), compact_ ? ImVec2{ImGui::GetIO().DisplaySize.x - px(24), ImGui::GetIO().DisplaySize.y - px(70)} : ImVec2{FLT_MAX, FLT_MAX});
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, px({10, 10}));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, px({10, 8}));
     if (ImGui::BeginPopup("Main menu")) {
         auto item = [&](const char* title, const char* shortcut, const char* command, bool enabled) {
-            if (ImGui::MenuItem(title, shortcut, false, enabled)) run = [this, command] { action(command); };
+            if (ImGui::MenuItem(title, compact_ ? nullptr : shortcut, false, enabled)) run = [this, command] { action(command); };
         };
         ImGui::TextDisabled("COLDEDIT"); ImGui::Separator();
         if (ImGui::MenuItem("Open audio...", "Ctrl+O", false, !busy_)) run = [this] { openDialog(); };
@@ -782,7 +806,7 @@ void Editor::overview(ImVec2 p, ImVec2 size) {
     label(p, "NAVIGATOR", muted);
     const char* hint = t ? "Drag to explore the whole file" : "No audio loaded";
     const float hintWidth = ImGui::CalcTextSize(hint).x / dpi_.layout;
-    label({p.x + size.x - hintWidth, p.y}, hint, muted);
+    if (size.x > hintWidth + 125) label({p.x + size.x - hintWidth, p.y}, hint, muted);
     p.y += 26; size.y -= 26;
     d.AddRectFilled(p, {p.x + size.x, p.y + size.y}, panel, 5);
     if (!t) {
@@ -822,6 +846,12 @@ void Editor::overview(ImVec2 p, ImVec2 size) {
 void Editor::inspector(ImVec2 p, ImVec2 size) {
     ImGui::SetCursorScreenPos(px(p)); ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, px({16, 16}));
     ImGui::BeginChild("Inspector", px(size), ImGuiChildFlags_AlwaysUseWindowPadding);
+    if (compact_) {
+        ImGui::Text("Playhead  %s", timecode(double(cursor_), source_ ? source_->sampleRate : 48000, true).c_str());
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::SliderFloat("##compact-volume", &volumeDb_, -60, 6, "Monitor %.1f dB")) playback_.setVolume(std::pow(10.f, volumeDb_ / 20));
+        ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+    }
     auto t = document_.timeline(); ImGui::TextColored(ImVec4(.38f, .87f, .76f, 1), "SELECTION");
     ImGui::SameLine(); ImGui::TextDisabled(selected() ? "  ACTIVE" : "  NONE");
     ImGui::Spacing();
@@ -896,38 +926,57 @@ void Editor::inspector(ImVec2 p, ImVec2 size) {
 }
 void Editor::emptyState(ImVec2 p, ImVec2 size) {
     auto d = drawList(); d.AddRectFilled(p, {p.x + size.x, p.y + size.y}, panel, 8);
-    const float cx = p.x + size.x * .5f, cy = p.y + size.y * .45f;
+    const float cx = p.x + size.x * .5f, cy = p.y + size.y * (compact_ ? .3f : .45f);
+    if (compact_ && size.y < 190) {
+        ImGui::SetCursorScreenPos(px({cx - 72.5f, p.y + (size.y - 44) * .5f}));
+        if (button("Open audio", {145, 44}, true)) openDialog();
+        return;
+    }
     const auto centeredLabel = [&](float y, const char* value, ImU32 color, ImFont* font) {
         const float fontSize = font->FontSize * ImGui::GetIO().FontGlobalScale;
         const float width = font->CalcTextSizeA(fontSize, std::numeric_limits<float>::max(), 0, value).x / dpi_.layout;
         label({cx - width * .5f, y}, value, color, font);
     };
     centeredLabel(cy - 5, "Make room for your sound.", text, titleFont_);
-    centeredLabel(cy + 33, "Drop a WAV, FLAC or MP3 file here to get started.", muted, bodyFont_);
+    centeredLabel(cy + 33, compact_ ? "Open a WAV, FLAC or MP3 file." : "Drop a WAV, FLAC or MP3 file here to get started.", muted, bodyFont_);
     ImGui::SetCursorScreenPos(px({cx - 72.5f, cy + 78})); if (button("Open audio", {145, 40}, true)) openDialog();
-    centeredLabel(cy + 145, "WAV / FLAC / MP3    /    MONO & STEREO", muted, bodyFont_);
+    if (!compact_ || size.y > 330) centeredLabel(cy + 145, compact_ ? "Audio stays on your device." : "WAV / FLAC / MP3    /    MONO & STEREO", muted, bodyFont_);
 }
 void Editor::modals() {
     if (confirmDiscard_) { ImGui::OpenPopup("Keep your changes?"); confirmDiscard_ = false; }
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, px({24, 22}));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, px(compact_ ? ImVec2{16, 16} : ImVec2{24, 22}));
+    const float modalWidth = std::min(520.f, logical(ImGui::GetIO().DisplaySize).x - 24);
+    const float contentWidth = modalWidth - (compact_ ? 32 : 48);
+    const auto modalText = [&](const char* value) {
+        if (compact_) ImGui::TextWrapped("%s", value); else ImGui::TextUnformatted(value);
+    };
+    const auto fitModal = [&] {
+        if (!compact_) return;
+        const auto display = ImGui::GetIO().DisplaySize;
+        ImGui::SetNextWindowPos({display.x * .5f, display.y * .5f}, ImGuiCond_Always, {.5f, .5f});
+        ImGui::SetNextWindowSize({px(modalWidth), 0}, ImGuiCond_Always);
+        ImGui::SetNextWindowSizeConstraints({px(modalWidth), 0}, {px(modalWidth), display.y - px(24)});
+    };
     if (cleanupPopup_) { ImGui::OpenPopup("Audio cleanup"); cleanupPopup_ = false; }
     ImGui::SetNextWindowPos({ImGui::GetIO().DisplaySize.x * .5f, ImGui::GetIO().DisplaySize.y * .5f}, ImGuiCond_Always, {.5f, .5f});
     ImGui::SetNextWindowSize({px(520), 0}, ImGuiCond_Always);
+    fitModal();
     if (ImGui::BeginPopupModal("Audio cleanup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Range: %s - %s", timecode(double(cleanupFirst_), cleanupBase_->sampleRate, true).c_str(), timecode(double(cleanupLast_), cleanupBase_->sampleRate, true).c_str());
+        if (compact_) ImGui::TextWrapped("Range: %s - %s", timecode(double(cleanupFirst_), cleanupBase_->sampleRate, true).c_str(), timecode(double(cleanupLast_), cleanupBase_->sampleRate, true).c_str());
+        else ImGui::Text("Range: %s - %s", timecode(double(cleanupFirst_), cleanupBase_->sampleRate, true).c_str(), timecode(double(cleanupLast_), cleanupBase_->sampleRate, true).c_str());
         ImGui::BeginDisabled(busy_);
         const char* kinds[] = {"Normalize", "Remove DC offset", "High-pass filter", "Low-pass filter"};
-        ImGui::SetNextItemWidth(px(360));
+        ImGui::SetNextItemWidth(px(std::min(360.f, contentWidth)));
         bool changed = ImGui::Combo("##cleanup-kind", &cleanupKind_, kinds, 4);
-        ImGui::SetNextItemWidth(px(360));
+        ImGui::SetNextItemWidth(px(std::min(360.f, contentWidth)));
         if (cleanupKind_ == 0) {
             changed |= ImGui::SliderFloat("##normalize-target", &normalizeDb_, -60, 0, "Target  %.1f dBFS");
-            ImGui::TextUnformatted("Linked channels preserve stereo balance. Sample peaks, not LUFS.");
-        } else if (cleanupKind_ == 1) ImGui::TextUnformatted("Subtract the measured average of each channel in this range.");
+            modalText("Linked channels preserve stereo balance. Sample peaks, not LUFS.");
+        } else if (cleanupKind_ == 1) modalText("Subtract the measured average of each channel in this range.");
         else {
             float& cutoff = cleanupKind_ == 2 ? highPassHz_ : lowPassHz_;
             changed |= ImGui::SliderFloat("##filter-cutoff", &cutoff, 10, float(cleanupBase_->sampleRate * .49), "Cutoff  %.0f Hz", ImGuiSliderFlags_Logarithmic);
-            ImGui::TextUnformatted("12 dB/octave Butterworth filter. Original sample rate preserved.");
+            modalText("12 dB/octave Butterworth filter. Original sample rate preserved.");
         }
         if (changed) resetCleanup();
         ImGui::Spacing();
@@ -945,7 +994,7 @@ void Editor::modals() {
         }
         ImGui::EndDisabled();
         if (busy_) {
-            ImGui::ProgressBar(jobProgress_.load(), px({360, 0}));
+            ImGui::ProgressBar(jobProgress_.load(), px({std::min(360.f, contentWidth), 0}));
             if (button("Cancel processing", {160, 32})) job_.request_stop();
         }
         if (cleanupClose_) {
@@ -954,21 +1003,25 @@ void Editor::modals() {
         ImGui::EndPopup();
     }
     if (insertSilencePopup_) { ImGui::OpenPopup("Insert silence"); insertSilencePopup_ = false; }
+    fitModal();
     if (ImGui::BeginPopupModal("Insert silence", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         const auto t = document_.timeline();
         ImGui::Text("At cursor: %s", timecode(double(silenceAt_), t->sampleRate, true).c_str());
-        ImGui::TextUnformatted("Existing audio moves right; the inserted silence becomes selected.");
+        modalText("Existing audio moves right; the inserted silence becomes selected.");
         ImGui::Spacing();
-        ImGui::SetNextItemWidth(px(220));
+        ImGui::SetNextItemWidth(px(std::min(220.f, contentWidth - 80)));
         if (ImGui::InputDouble("Seconds", &silenceSeconds_, 0, 0, "%.6f")) {
             const long double frames = std::round(static_cast<long double>(silenceSeconds_) * t->sampleRate);
             silenceFrames_ = std::isfinite(silenceSeconds_) && frames >= 1 && frames < static_cast<long double>(std::numeric_limits<Frame>::max())
                 ? Frame(frames) : 0;
         }
-        ImGui::SetNextItemWidth(px(220));
+        ImGui::SetNextItemWidth(px(std::min(220.f, contentWidth - 80)));
         if (ImGui::InputScalar("Samples", ImGuiDataType_S64, &silenceFrames_)) silenceSeconds_ = double(silenceFrames_) / t->sampleRate;
         const bool valid = silenceFrames_ > 0 && silenceFrames_ <= std::numeric_limits<Frame>::max() - t->frames;
-        if (valid) ImGui::TextDisabled("%lld samples / %.6f seconds at %u Hz", static_cast<long long>(silenceFrames_), double(silenceFrames_) / t->sampleRate, t->sampleRate);
+        if (valid) {
+            if (compact_) ImGui::TextWrapped("%lld samples / %.6f seconds at %u Hz", static_cast<long long>(silenceFrames_), double(silenceFrames_) / t->sampleRate, t->sampleRate);
+            else ImGui::TextDisabled("%lld samples / %.6f seconds at %u Hz", static_cast<long long>(silenceFrames_), double(silenceFrames_) / t->sampleRate, t->sampleRate);
+        }
         else ImGui::TextColored(ImVec4(.95f, .74f, .45f, 1), "Enter a positive duration that fits in the timeline.");
         ImGui::Spacing(); ImGui::BeginDisabled(!valid);
         if (button("Insert", {110, 36}, true) || (valid && ImGui::IsKeyPressed(ImGuiKey_Enter, false))) {
@@ -981,13 +1034,14 @@ void Editor::modals() {
         if (button("Cancel", {100, 36}) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) { silenceSeconds_ = 1; ImGui::CloseCurrentPopup(); }
         ImGui::EndPopup();
     }
+    fitModal();
     if (ImGui::BeginPopupModal("Keep your changes?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextUnformatted("This document has edits that have not been exported.");
-        ImGui::TextUnformatted("Export audio to keep your edits before opening another file or closing.");
+        modalText("This document has edits that have not been exported.");
+        modalText("Export audio to keep your edits before opening another file or closing.");
         ImGui::Spacing();
         if (button("Export audio...", {150, 36}, true)) { continueAfterExport_ = true; ImGui::CloseCurrentPopup(); exportDialog(); }
-        ImGui::SameLine(); if (button("Discard edits", {130, 36})) { ImGui::CloseCurrentPopup(); if (pendingClose_) close_ = true; else openNow(pendingPath_); }
-        ImGui::SameLine(); if (button("Cancel", {90, 36})) {
+        if (!compact_) ImGui::SameLine(); if (button("Discard edits", {130, 36})) { ImGui::CloseCurrentPopup(); if (pendingClose_) close_ = true; else openNow(pendingPath_); }
+        if (!compact_) ImGui::SameLine(); if (button("Cancel", {90, 36})) {
             ImGui::CloseCurrentPopup();
 #ifdef __EMSCRIPTEN__
             webClearImport();
@@ -996,23 +1050,27 @@ void Editor::modals() {
         ImGui::EndPopup();
     }
     if (!error_.empty()) ImGui::OpenPopup("A quick note");
+    fitModal();
     if (ImGui::BeginPopupModal("A quick note", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::PushTextWrapPos(px(460)); ImGui::TextUnformatted(error_.c_str()); ImGui::PopTextWrapPos();
+        ImGui::PushTextWrapPos(px(std::min(460.f, contentWidth))); ImGui::TextUnformatted(error_.c_str()); ImGui::PopTextWrapPos();
         if (button("Got it", {110, 36}, true)) { error_.clear(); ImGui::CloseCurrentPopup(); } ImGui::EndPopup();
     }
     if (help_) { ImGui::OpenPopup("Find your way around"); help_ = false; }
+    fitModal();
     if (ImGui::BeginPopupModal("Find your way around", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextUnformatted("TIMELINE"); ImGui::Spacing();
         const char* rows[][2] = {{wheelZooms_ ? "Wheel" : "Ctrl + wheel", "Zoom around the pointer"}, {wheelZooms_ ? "Ctrl + wheel" : "Wheel", "Scroll through audio"}, {"Horizontal wheel", "Scroll through audio"}, {"Navigator wheel", "Zoom around the current view"}, {"Middle-button drag", "Pan directly"}, {"Alt + wheel", "Adjust vertical scale"}, {"Drag / Shift-click", "Select / extend range"}, {"Drag inside / Alt-drag", "Move range / draw new range"}, {"Double-click", "Select all"}, {"Space / L", "Play-pause / toggle loop"}, {"F / Z", "Fit file / zoom to selection"}, {"Ctrl + X / C / V", "Cut / copy / paste (mix into selection)"}, {"Ctrl + Shift + V", "Replace selection with clipboard"}, {"Ctrl + T / Delete", "Trim / delete selection"}, {"Ctrl + Z / Ctrl + Shift + Z", "Undo / redo"}, {"R / Home / End", "Reverse / jump to start / end"}, {"Ctrl + O / Ctrl + E", "Open audio / export audio"}, {"I / O", "Fade in / fade out selection"}, {"Insert", "Insert silence at cursor"}, {"J", "Snap selection to zero crossings"}, {"Ctrl + Shift + E", "Save selected audio (WAV/FLAC/MP3)"}};
-        if (ImGui::BeginTable("keys", 2, 0, px({510, 0}))) { for (auto& row : rows) { ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextColored(ImVec4(.38f, .87f, .76f, 1), "%s", row[0]); ImGui::TableNextColumn(); ImGui::TextUnformatted(row[1]); } ImGui::EndTable(); }
+        if (ImGui::BeginTable("keys", 2, 0, px({compact_ ? contentWidth : 510, 0}))) { for (auto& row : rows) { ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextWrapped("%s", row[0]); ImGui::TableNextColumn(); ImGui::TextWrapped("%s", row[1]); } ImGui::EndTable(); }
         ImGui::Spacing(); if (button("Back to the sound", {-1, 36}, true)) ImGui::CloseCurrentPopup(); ImGui::EndPopup();
     }
     if (openPathPopup_) { ImGui::OpenPopup("Open path"); openPathPopup_ = false; }
+    fitModal();
     if (ImGui::BeginPopupModal("Open path", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::SetNextItemWidth(px(480)); ImGui::InputText("WAV / FLAC / MP3 path", pathInput_, sizeof(pathInput_));
         if (button("Open")) { requestOpen(fromUtf8(pathInput_)); ImGui::CloseCurrentPopup(); } ImGui::SameLine(); if (button("Cancel")) ImGui::CloseCurrentPopup(); ImGui::EndPopup();
     }
     if (exportPathPopup_) { ImGui::OpenPopup("Export path"); exportPathPopup_ = false; }
+    fitModal();
     if (ImGui::BeginPopupModal("Export path", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::SetNextItemWidth(px(480)); ImGui::InputText("New audio path", pathInput_, sizeof(pathInput_));
         if (button("Export")) { exportTo(fromUtf8(pathInput_), selectionExport_); ImGui::CloseCurrentPopup(); } ImGui::SameLine(); if (button("Cancel")) { continueAfterExport_ = false; ImGui::CloseCurrentPopup(); } ImGui::EndPopup();
@@ -1048,12 +1106,25 @@ void Editor::render() {
     ImGui::SetNextWindowPos({0, 0}); ImGui::SetNextWindowSize(io.DisplaySize);
     ImGui::Begin("ColdEdit", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoScrollbar);
     shortcuts(); const float width = io.DisplaySize.x / dpi_.layout, height = io.DisplaySize.y / dpi_.layout;
+    compact_ = width < 960 || height < 500;
     header(width);
-    const float mainWidth = width - 294, canvasHeight = std::max(180.f, height - 220);
-    waveform({24, 81}, {mainWidth, canvasHeight});
-    overview({24, 81 + canvasHeight + 18}, {mainWidth, 73});
-    playbackPanel({width - 250, 81}, {226, 198});
-    inspector({width - 250, 291}, {226, height - 337});
+    if (compact_) {
+        if (compactTools_) {
+            ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, px(22));
+            inspector({12, 130}, {width - 24, height - 176});
+            ImGui::PopStyleVar();
+        } else {
+            const float canvasHeight = std::max(64.f, height - 238);
+            waveform({12, 130}, {width - 24, canvasHeight});
+            overview({12, 140 + canvasHeight}, {width - 24, 54});
+        }
+    } else {
+        const float mainWidth = width - 294, canvasHeight = std::max(180.f, height - 220);
+        waveform({24, 81}, {mainWidth, canvasHeight});
+        overview({24, 81 + canvasHeight + 18}, {mainWidth, 73});
+        playbackPanel({width - 250, 81}, {226, 198});
+        inspector({width - 250, 291}, {226, height - 337});
+    }
     auto d = drawList(); d.AddLine({0, height - 37}, {width, height - 37}, line);
     const auto performance = decimal(source_ ? source_->peakBytes() / 1048576. : 0, 1) + " MB peaks  /  " + decimal(resident_ / 1048576., 0) +
 #ifdef __EMSCRIPTEN__
@@ -1069,7 +1140,7 @@ void Editor::render() {
         label({statusRight, height - 27}, performance, muted);
         statusRight -= 24;
     }
-    if (source_) {
+    if (source_ && !compact_) {
         const auto detail = decimal(source_->sampleRate / 1000., 1) + " kHz   /   " + (document_.timeline()->channels == 2 ? "Stereo" : "Mono") + "   /   " + (source_->format == "WAV" ? std::to_string(source_->bits) + (source_->floating ? "-bit float" : "-bit PCM") : source_->format);
         statusRight -= ImGui::CalcTextSize(detail.c_str()).x / dpi_.layout;
         label({statusRight, height - 27}, detail, muted);
@@ -1186,6 +1257,8 @@ std::string Editor::diagnostics() const {
         << ",\n  \"dpi_rebuilds\": " << dpiChanges_
         << ",\n  \"display_width\": " << ImGui::GetIO().DisplaySize.x
         << ",\n  \"display_height\": " << ImGui::GetIO().DisplaySize.y
+        << ",\n  \"compact_layout\": " << (compact_ ? "true" : "false")
+        << ",\n  \"tools_open\": " << (compact_ && compactTools_ ? "true" : "false")
         << ",\n  \"framebuffer_scale\": " << ImGui::GetIO().DisplayFramebufferScale.x
         << ",\n  \"font_global_scale\": " << ImGui::GetIO().FontGlobalScale
         << ",\n  \"can_undo\": " << (document_.canUndo() ? "true" : "false")

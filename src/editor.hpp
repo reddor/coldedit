@@ -42,6 +42,7 @@ private:
     Frame anchor_ = 0, head_ = 0, cursor_ = 0;
     bool selecting_ = false, loop_ = false, follow_ = true, close_ = false;
     bool wheelZooms_ = true;
+    bool compact_ = false, compactTools_ = false;
     SelectionBoundaryDrag boundaryDrag_;
     SelectionRangeDrag rangeDrag_;
     Frame boundaryDragLimit_ = 0;

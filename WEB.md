@@ -86,8 +86,12 @@ Releases, where Windows and Linux packages are published.
 - Export initiates a download and provides a retry link. Browsers control where
   it is saved; the application cannot confirm that it reached disk. Save it
   before closing the tab. Unsaved edits trigger the browser's unload prompt.
-- This is a desktop-browser interface with a minimum 960 × 660 editing area.
-  Smaller screens scroll the page. No touch/mobile workflow is promised.
+- Smaller screens use a compact toolbar, a full-width waveform, and a **Tools**
+  button for the inspector. Tap the ColdEdit menu to open/export files or access
+  additional edits; drag on the waveform to select, use **+ / -** to zoom, and
+  drag the navigator to pan. The Tools panel has a wide draggable scrollbar.
+  The layout fits portrait and landscape screens down to 320 CSS pixels wide;
+  dialogs wrap to the available width. Browser memory limits still apply.
 
 ## High DPI and browser zoom
 
@@ -158,6 +162,7 @@ node tests/web-wheel.cjs
 node tests/web-features.cjs
 node tests/web-cleanup.cjs
 node tests/web-selection.cjs
+node tests/web-mobile.cjs
 ```
 
 Install the pinned test dependency with `npm ci --prefix tests` first. Set
@@ -192,6 +197,11 @@ to a comma-separated scale list to run a subset; `COLDEDIT_FORCE_DPI=1.1` with
 the toolbar suite also tests Chromium's real (non-emulated) physical pixel box.
 Other browser engines require separate
 verification. Timing is not a frame-rate guarantee.
+
+The mobile suite checks 320/390-pixel phones, landscape and tablet viewports,
+high DPI, touch file picking, selection and editing, zoom, Tools, and rotation.
+These are Chromium touch emulation tests; physical iOS/Android devices and
+mobile Safari still need separate verification.
 
 Wheel tests cover pointer-anchored default zoom, Ctrl panning, horizontal panning,
 Alt vertical scale, navigator center anchoring, and the saved View preference
