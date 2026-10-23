@@ -12,10 +12,12 @@ scripts needed to rebuild LAME and relink this exact ColdEdit build. The other
 libraries' notices are in ../licenses. Keep this directory with distributed
 copies, including the hosted web download; it is not loaded at app startup.
 
-You may modify this copy of ColdEdit for your own use and reverse engineer it
-for debugging such modifications, including modifications to LAME. LAME's own
-source remains licensed under the LGPL. This notice grants no broader license
-to redistribute or reuse ColdEdit code separately from these purposes.
+ColdEdit's original code is licensed under the MIT License; see ../LICENSE.
+You may modify this copy of ColdEdit and reverse engineer it for debugging such
+modifications, including modifications to LAME. LAME remains licensed under the
+LGPL, and the other bundled components retain their own licenses. The MIT
+license for ColdEdit does not replace those licenses or the LGPL relinking
+requirements described above.
 
 TOOLCHAIN.txt records the compiler and platform used for this particular kit.
 Use a matching toolchain when relinking precompiled application objects.

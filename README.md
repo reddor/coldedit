@@ -318,6 +318,13 @@ without dither; float export preserves finite headroom. Peak normalization
 measures sample peaks, not inter-sample true peaks. Automated playback checks
 verify sample delivery; subjective audio quality has not been listening-tested.
 
+## License
+
+ColdEdit's original code is licensed under the [MIT License](LICENSE),
+Copyright (c) 2026 Simon Ley. Third-party libraries, fonts, and other bundled
+components retain their own licenses. Release packages include the MIT license
+and the dependency license notices described below.
+
 ## Source map and dependencies
 
 - `src/audio_file.*`: mapping, RIFF validation, sample access, peak pyramid.
