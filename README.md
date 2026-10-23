@@ -24,7 +24,7 @@ The editor starts empty until you open your audio.
 
 A WebAssembly build is also available in `dist/Web` and `dist/ColdEdit-web.zip`.
 It runs locally in your browser, with a **64 MiB input limit** and a
-**128 MiB default shared audio budget** (optionally 256 MiB) and **128 MiB export limit**, and links to GitHub Releases for native downloads for
+**128 MiB default shared audio budget** (optionally 256 or 512 MiB) and **128 MiB export limit**, and links to GitHub Releases for native downloads for
 larger recordings. See [WEB.md](WEB.md) for running, building, hosting, and
 browser-specific memory behavior. Smaller screens use a compact toolbar and a
 **Tools** panel, with touch selection and zoom buttons.
@@ -151,6 +151,11 @@ main waveform. The preference is saved across launches (per browser origin on
 the web). Alt+wheel still adjusts vertical scale; the navigator always zooms
 around the current view. Sample rate, channels, and source bit depth/format
 appear in the bottom status bar.
+
+**Follow playback** keeps the playhead about two-thirds across the waveform
+while the audio scrolls underneath, stopping at the file's boundaries. Zooming,
+panning, and selecting keep this setting enabled; turn it off in the inspector
+or **ColdEdit > Playback > Follow playback** to explore freely during playback.
 
 ## Build and verify
 
@@ -279,7 +284,10 @@ files are released when no preview, clipboard, playback, or undo state needs
 them. Undo retains the original samples; a process crash may leave temporary
 files in the system temporary directory. The browser uses an enforced shared
 128 MiB default budget for imported PCM and rendered effects, including previews
-and history. **ColdEdit > Web audio budget** offers a persistent 256 MiB option.
+and history. **ColdEdit > Web audio budget** offers persistent 256 and 512 MiB options.
+Its **Clear undo/redo and clipboard** action releases their audio buffers while
+keeping the current audio, selection, and saved/unsaved status. Freed memory is
+reused by the editor; the browser's allocated heap does not shrink.
 When a filter, DC removal, or additive paste reaches the budget, a recovery dialog
 shows how much clearing undo/redo can release and offers **Clear undo and retry**
 when that would fit. Current audio, clipboard, selection and saved/unsaved status

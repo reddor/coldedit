@@ -10,10 +10,11 @@ inline constexpr std::uint64_t inputLimit = 64ull * 1024 * 1024;
 inline constexpr std::uint64_t exportLimit = 128ull * 1024 * 1024;
 inline constexpr std::uint64_t defaultAudioLimit = 128ull * 1024 * 1024;
 inline constexpr std::uint64_t extendedAudioLimit = 256ull * 1024 * 1024;
+inline constexpr std::uint64_t maximumAudioLimit = 512ull * 1024 * 1024;
 inline std::atomic<std::uint64_t> audioLimit{defaultAudioLimit};
 inline std::atomic<std::uint64_t> audioBytes{0};
 inline bool setAudioLimit(std::uint64_t bytes) {
-    if ((bytes != defaultAudioLimit && bytes != extendedAudioLimit) || bytes < audioBytes.load()) return false;
+    if ((bytes != defaultAudioLimit && bytes != extendedAudioLimit && bytes != maximumAudioLimit) || bytes < audioBytes.load()) return false;
     audioLimit.store(bytes); return true;
 }
 struct AudioBudgetExceeded : std::runtime_error {

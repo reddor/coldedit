@@ -17,6 +17,13 @@ struct Viewport {
         targetStart = frame - anchor * targetSpan; clamp(targetStart, targetSpan);
     }
     void pan(double frames, bool instant = false) { show(targetStart + frames, targetSpan, instant); }
+    void follow(double frame) {
+        // Track directly so even a view shorter than the animation's settling
+        // time keeps the playhead visible. Zoom still eases through update().
+        start = frame - span * (2.0 / 3.0);
+        targetStart = frame - targetSpan * (2.0 / 3.0);
+        clamp(start, span); clamp(targetStart, targetSpan);
+    }
     bool update(double dt) {
         const double k = 1.0 - std::exp(-std::clamp(dt, 0.0, 0.1) * 24.0);
         start += (targetStart - start) * k; span += (targetSpan - span) * k;

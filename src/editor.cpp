@@ -277,16 +277,29 @@ std::size_t Editor::currentPeakBytes() const {
 #ifdef __EMSCRIPTEN__
 void Editor::audioBudgetSetting() {
     const auto used = AudioFile::audioBytes();
-    for (const unsigned mib : {128u, 256u}) {
+    for (const unsigned mib : {128u, 256u, 512u}) {
         const auto bytes = std::uint64_t(mib) * 1024 * 1024;
+        const auto label = std::to_string(mib) + (mib == 128 ? " MiB (default)" : " MiB");
         ImGui::BeginDisabled(busy_ || used > bytes);
-        if (ImGui::RadioButton(mib == 128 ? "128 MiB (default)" : "256 MiB", web::audioLimit.load() == bytes) && web::setAudioLimit(bytes)) {
+        if (ImGui::RadioButton(label.c_str(), web::audioLimit.load() == bytes) && web::setAudioLimit(bytes)) {
             status_ = saveWebAudioBudget(mib) ? "Web audio budget: " + std::to_string(mib) + " MiB" : "Audio budget changed for this session; could not save it.";
         }
         ImGui::EndDisabled();
         if (used > bytes && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Retained audio must fit before lowering the budget.");
     }
     ImGui::TextDisabled("Audio in use: %.1f MiB", used / 1048576.);
+}
+void Editor::clearAudioBuffers() {
+    const auto current = document_.timeline();
+    if (busy_ || !current) return;
+    const bool playing = playback_.playing();
+    cursor_ = playback_.position();
+    // Retire any older playback revision before releasing its history sources.
+    playback_.setTimeline(current, cursor_);
+    clipboard_.clear(); clipboardRate_ = clipboardChannels_ = 0;
+    document_.clearHistory(); syncPlayback_ = true;
+    if (playing) playback_.play(cursor_, selected() ? first() : 0, selected() ? last() : current->frames, loop_);
+    status_ = "Undo/redo and clipboard cleared; current audio kept.";
 }
 #endif
 void Editor::exportTo(const std::filesystem::path& requestedPath, bool selectionOnly) {
@@ -514,8 +527,8 @@ void Editor::header(float width) {
         ImGui::SameLine(0, px(4));
         if (toolButton("##paste", ToolIcon::Paste, "", "Paste", paste)) action("paste");
         ImGui::BeginDisabled(!ready);
-        ImGui::SameLine(0, px(4)); if (button("-", {44, 44})) { follow_ = false; view_.zoom(1.5, .5); }
-        ImGui::SameLine(0, px(4)); if (button("+", {44, 44})) { follow_ = false; view_.zoom(.65, .5); }
+        ImGui::SameLine(0, px(4)); if (button("-", {44, 44})) view_.zoom(1.5, .5);
+        ImGui::SameLine(0, px(4)); if (button("+", {44, 44})) view_.zoom(.65, .5);
         ImGui::EndDisabled();
         return;
     }
@@ -640,7 +653,13 @@ void Editor::mainMenu() {
 #ifdef __EMSCRIPTEN__
         if (ImGui::BeginMenu("Web audio budget", !busy_)) {
             audioBudgetSetting();
-            ImGui::TextDisabled("256 MiB allows more edits, but uses more memory.");
+            ImGui::TextDisabled("More edits use more memory.");
+            ImGui::Separator();
+            if (ImGui::MenuItem("Clear undo/redo and clipboard", nullptr, false,
+                ready && (document_.canUndo() || document_.canRedo() || !clipboard_.empty())))
+                run = [this] { clearAudioBuffers(); };
+            ImGui::TextDisabled("Keeps current audio and edits.");
+            ImGui::TextDisabled("Freed space is reused.");
             ImGui::EndMenu();
         }
 #endif
@@ -791,7 +810,6 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
     const bool hovered = ImGui::IsItemHovered();
     const auto frameAtMouse = [&] { return Frame(std::llround(view_.start + (mouse.x - left) / width * view_.span)); };
     if (hovered && (io.MouseWheel != 0 || io.MouseWheelH != 0)) {
-        follow_ = false;
         if (io.KeyAlt) verticalZoom_ = std::clamp(verticalZoom_ * std::exp(io.MouseWheel * .12f), .25f, 8.f);
         else {
             const bool zoom = wheelZooms_ != (io.KeyCtrl || io.KeySuper);
@@ -817,10 +835,10 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
             boundaryDragLimit_ = selectionExtent();
             boundaryDrag_.begin(edge, anchor_, head_, frame);
             boundaryDrag_.update(frame, boundaryDragLimit_, anchor_, head_);
-            selecting_ = true; follow_ = false;
+            selecting_ = true;
         } else if (selected() && frame >= first() && frame <= last() && !io.KeyShift && !io.KeyAlt && mouse.y >= top) {
             boundaryDrag_.active = false; rangeDrag_.begin(anchor_, head_, frame, t->frames);
-            selecting_ = true; follow_ = false;
+            selecting_ = true;
         } else {
             boundaryDrag_.active = rangeDrag_.active = false;
             head_ = std::clamp(frame, Frame(0), t->frames);
@@ -852,7 +870,7 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
             else head_ = std::clamp(frameAtMouse(), Frame(0), t->frames);
         }
     }
-    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0)) { follow_ = false; view_.pan(-io.MouseDelta.x / dpi_.layout / width * view_.span, true); ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); }
+    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0)) { view_.pan(-io.MouseDelta.x / dpi_.layout / width * view_.span, true); ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); }
     if (ImGui::BeginPopupContextItem("Wave actions")) {
         if (ImGui::MenuItem("Copy", "Ctrl+C", false, selected())) action("copy");
         if (ImGui::MenuItem("Cut", "Ctrl+X", false, selected())) action("cut");
@@ -901,11 +919,9 @@ void Editor::overview(ImVec2 p, ImVec2 size) {
     ImGui::SetCursorScreenPos(px(p)); ImGui::InvisibleButton("navigator", px(size));
     const auto& io = ImGui::GetIO();
     if (ImGui::IsItemHovered() && io.MouseWheel != 0) {
-        follow_ = false;
         view_.zoom(std::exp(-io.MouseWheel * .22), .5);
     } else if (ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
         (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || io.MouseDelta.x != 0)) {
-        follow_ = false;
         const double frame = (logical(io.MousePos).x - p.x) / size.x * total;
         view_.show(frame - view_.targetSpan * .5, view_.targetSpan, true);
     }
@@ -1222,9 +1238,7 @@ void Editor::render() {
     view_.update(io.DeltaTime);
     if (io.MouseDelta.x != 0 || io.MouseDelta.y != 0 || io.MouseWheel != 0 || io.MouseWheelH != 0) lastInteraction_ = ImGui::GetTime();
     if (source_) cursor_ = playback_.position();
-    if (playback_.playing()) {
-        if (follow_ && (cursor_ > view_.start + view_.span * .94 || cursor_ < view_.start)) view_.show(double(cursor_) - view_.span * .15, view_.targetSpan);
-    }
+    if (playback_.playing() && follow_) view_.follow(double(cursor_));
     frameMs_ = std::lerp(frameMs_, io.DeltaTime * 1000.f, .05f);
     if (ImGui::GetTime() - lastMemoryPoll_ > 1) { resident_ = residentBytes(); lastMemoryPoll_ = ImGui::GetTime(); }
     ImGui::SetNextWindowPos({0, 0}); ImGui::SetNextWindowSize(io.DisplaySize);
@@ -1397,6 +1411,7 @@ std::string Editor::diagnostics() const {
         << ",\n  \"selection_start\": " << first()
         << ",\n  \"selection_end\": " << last()
         << ",\n  \"view_start\": " << view_.start
+        << ",\n  \"view_cursor\": " << cursor_
         << ",\n  \"view_span\": " << view_.span
         << ",\n  \"view_target_start\": " << view_.targetStart
         << ",\n  \"view_target_span\": " << view_.targetSpan

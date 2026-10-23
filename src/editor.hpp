@@ -143,6 +143,7 @@ private:
     std::size_t currentPeakBytes() const;
 #ifdef __EMSCRIPTEN__
     void audioBudgetSetting();
+    void clearAudioBuffers();
 #endif
     void shortcuts();
     void header(float width);

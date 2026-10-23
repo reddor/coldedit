@@ -13,6 +13,16 @@ async function processMenu(p,row){
   for(let i=0;i<row;i++)await key(p,'ArrowDown');await key(p,'Enter');
 }
 async function filter(p,row=7){await processMenu(p,row);await click(p,565,606);await p.waitForFunction(()=>!coldeditWeb.diagnostics().busy);await tick(p);}
+async function budget(p,mib){
+  await key(p,'F10');await key(p,'End');await key(p,'ArrowUp');await key(p,'ArrowRight');await key(p,'Home');
+  for(let i=0;i<[128,256,512].indexOf(mib);i++)await key(p,'ArrowDown');
+  await key(p,'Enter');await key(p,'Escape');await key(p,'Escape');
+}
+async function clearBuffers(p){
+  await key(p,'F10');await key(p,'End');await key(p,'ArrowUp');await key(p,'ArrowRight');await key(p,'End');
+  await p.screenshot({path:`artifacts/web-memory-menu-${p.viewportSize().width}.png`});
+  await key(p,'Enter');assert.equal((await diag(p)).popup_open,false);
+}
 function fixture(rate=44100){
   const n=180*rate,b=Buffer.alloc(44+n*4);
   b.write('RIFF');b.writeUInt32LE(b.length-8,4);b.write('WAVEfmt ',8);b.writeUInt32LE(16,16);
@@ -44,7 +54,7 @@ function fixture(rate=44100){
     await key(p,'Escape');assert.equal((await diag(p)).memory_recovery,false);
     assert.equal((await diag(p)).history_states,3);assert.equal((await diag(p)).popup_open,true);
     await click(p,565,606);await p.waitForFunction(()=>coldeditWeb.diagnostics().memory_recovery);
-    await click(p,720,622);await p.waitForFunction(()=>!coldeditWeb.diagnostics().busy&&!coldeditWeb.diagnostics().popup_open);
+    await click(p,720,643);await p.waitForFunction(()=>!coldeditWeb.diagnostics().busy&&!coldeditWeb.diagnostics().popup_open);
     let recovered=await diag(p);
     assert.equal(recovered.history_states,2);assert.equal(recovered.undo_label,'High-pass filter');assert.equal(recovered.dirty,true);
     assert.equal(recovered.audio_bytes,frames*16);assert.equal(recovered.memory_recovery,false);
@@ -71,22 +81,69 @@ function fixture(rate=44100){
     // The same recovery path works for additive paste, preserving its clipboard.
     await key(p,'Control+c');await key(p,'Control+v');await p.waitForFunction(()=>coldeditWeb.diagnostics().memory_recovery);
     assert.equal((await diag(p)).memory_reclaimable,frames*8);
-    await click(p,720,622);await p.waitForFunction(()=>!coldeditWeb.diagnostics().busy&&!coldeditWeb.diagnostics().popup_open);
+    await click(p,720,643);await p.waitForFunction(()=>!coldeditWeb.diagnostics().busy&&!coldeditWeb.diagnostics().popup_open);
     assert.equal((await diag(p)).undo_label,'Paste into selection');assert.equal((await diag(p)).audio_bytes,frames*16);
     // Clipboard now holds the older filter output: clearing history cannot free it.
     await filter(p);assert.equal((await diag(p)).memory_reclaimable,0);
     await p.screenshot({path:'artifacts/web-memory-clipboard.png'});
     // This dialog is taller because it explains why clearing undo cannot help.
-    await click(p,501,399);await tick(p); // 256 MiB radio
+    await click(p,501,378);await tick(p); // 256 MiB radio
     assert.equal((await diag(p)).audio_limit,256*MiB);
     await p.screenshot({path:'artifacts/web-memory-256.png'});
-    await click(p,720,578);await p.waitForFunction(()=>!coldeditWeb.diagnostics().busy&&!coldeditWeb.diagnostics().popup_open);
+    await click(p,720,599);await p.waitForFunction(()=>!coldeditWeb.diagnostics().busy&&!coldeditWeb.diagnostics().popup_open);
     assert.equal((await diag(p)).history_states,3);assert.equal((await diag(p)).audio_bytes,frames*24);
     assert.equal(await p.locator('#audio-budget').textContent(),'256');
     // Preference survives a reload. Lowering is available again in an empty tab.
     await p.reload();await p.waitForFunction(()=>document.querySelector('#loading').hidden);
     assert.equal((await diag(p)).audio_limit,256*MiB);
-    await key(p,'F10');await key(p,'End');await key(p,'ArrowUp');await key(p,'ArrowRight');await key(p,'Home');await key(p,'Enter');await key(p,'Escape');await key(p,'Escape');
+    await budget(p,512);
+    assert.equal((await diag(p)).audio_limit,512*MiB);
+    assert.equal(await p.locator('#audio-budget').textContent(),'512');
+    await p.reload();await p.waitForFunction(()=>document.querySelector('#loading').hidden);
+    assert.equal((await diag(p)).audio_limit,512*MiB);
+    // Retain real filter outputs beyond the old cap and near the new limit.
+    // This also exercises audio playback pointers after WASM memory growth.
+    await p.locator('#file-input').setInputFiles(fixture());await p.waitForFunction(n=>coldeditWeb.diagnostics().frames===n,frames);
+    for(let i=0;i<7;i++){
+      await filter(p);
+      if(i===0)await key(p,'Control+c'); // Pin an older result outside the current audio.
+    }
+    const expanded=await diag(p);
+    assert.equal(expanded.audio_bytes,44+frames*60);assert.equal(expanded.history_states,8);
+    assert(expanded.audio_bytes>256*MiB);assert.equal(expanded.memory_recovery,false);
+    await key(p,'Space');await p.waitForFunction(()=>coldeditWeb.diagnostics().position>0);await key(p,'Space');
+    await key(p,'Control+z');assert.equal((await diag(p)).history_states,8);
+    await key(p,'Control+Shift+z');
+    await filter(p);assert.equal((await diag(p)).memory_recovery,true);
+    assert.equal((await diag(p)).audio_bytes,expanded.audio_bytes);
+    await p.screenshot({path:'artifacts/web-memory-512.png'});
+    await key(p,'Escape');await key(p,'Escape');
+    // Manual cleanup releases history and the pinned clipboard without changing audio.
+    await p.setViewportSize({width:390,height:844});await tick(p);
+    await clearBuffers(p);
+    await p.setViewportSize({width:1440,height:944});await tick(p);
+    await p.waitForFunction(n=>coldeditWeb.diagnostics().audio_bytes===n,frames*8);
+    const cleaned=await diag(p);
+    for(const field of ['frames','channels','selection_start','selection_end','dirty'])assert.equal(cleaned[field],expanded[field],field);
+    assert.equal(cleaned.history_states,1);assert.equal(cleaned.can_undo,false);assert.equal(cleaned.can_redo,false);
+    await key(p,'Control+v');assert.equal((await diag(p)).history_states,1,'clipboard is empty');
+    const cleanedDownload=p.waitForEvent('download');await key(p,'Control+e');
+    await(await cleanedDownload).saveAs('artifacts/web-memory-cleaned.wav');await p.waitForFunction(()=>!coldeditWeb.diagnostics().busy);
+    const cleanedOutput=fs.readFileSync('artifacts/web-memory-cleaned.wav');
+    for(let c=0;c<2;c++){
+      let expected=Array.from({length:1000},(_,i)=>Math.round((c?5000:7000)*Math.sin(i*(c?.21:.14))+(c?-500:1000))/32768);
+      for(let i=0;i<7;i++)expected=runFilter(expected,12000,false);
+      for(let i=0;i<1000;i++)assert(Math.abs(cleanedOutput.readIntLE(44+(i*2+c)*3,3)/8388608-expected[i])<2e-6);
+    }
+    await p.locator('#dismiss').click();await tick(p);
+    // A clean document remains clean; clearing redo does not interrupt playback.
+    await key(p,'Control+c');await key(p,'R');await key(p,'Control+z');assert.equal((await diag(p)).can_redo,true);
+    await key(p,'Space');await clearBuffers(p);
+    const cleanPlaying=await diag(p);
+    assert.equal(cleanPlaying.dirty,false);assert.equal(cleanPlaying.can_redo,false);assert.equal(cleanPlaying.can_undo,false);assert.equal(cleanPlaying.playing,true);
+    await key(p,'Space');
+    // The released space makes lowering the budget available without reloading.
+    await budget(p,128);
     assert.equal((await diag(p)).audio_limit,128*MiB);
     await p.reload();await p.waitForFunction(()=>document.querySelector('#loading').hidden);assert.equal((await diag(p)).audio_limit,128*MiB);
     // At 48 kHz the current + destination float buffers alone exceed 128 MiB.
@@ -97,8 +154,8 @@ function fixture(rate=44100){
     await p.screenshot({path:'artifacts/web-memory-48khz.png'});
     await key(p,'Escape');assert.equal((await diag(p)).history_states,2);
     assert.deepEqual(errors,[]);
-    fs.writeFileSync('artifacts/web-memory.json',JSON.stringify({before,blocked,recovered,tooLarge},null,2));
-    console.log('PASS memory: three-minute filters, exact exported samples, cancel, clear/retry, dirty state, clipboard, additive paste, 128/256 setting, persistence, insufficient recovery');
+    fs.writeFileSync('artifacts/web-memory.json',JSON.stringify({before,blocked,recovered,expanded,cleaned,cleanPlaying,tooLarge},null,2));
+    console.log('PASS memory: three-minute filters, exact exported samples, cancel, clear/retry, dirty state, clipboard, additive paste, 128/256/512 settings, persistence, manual buffer cleanup, large retained history, insufficient recovery');
   } catch(e){await captureFailure(p,'web-memory-failure',e);throw e;}
   finally {await context.close();await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

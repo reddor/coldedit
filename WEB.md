@@ -18,7 +18,7 @@ Choose **ColdEdit > Export format**, then export the file or selection.
 Selection dragging, retained ranges after Cut/Delete, Save selection, and
 additive Paste into selection share the native implementation. Mixing uses the
 same shared audio budget as imports and filters, including undo history (128 MiB
-by default, optionally 256 MiB).
+by default, optionally 256 or 512 MiB).
 `tests/web-selection.cjs` checks real pointer/keyboard input and every exported
 sample after mixing, plus retained ranges at EOF and recovery after cutting all.
 
@@ -60,10 +60,16 @@ Releases, where Windows and Linux packages are published.
   audio from previous files. Undo snapshots share their referenced audio sources.
 - All retained source and effect audio (preview, clipboard, playback, undo/redo)
   shares a **128 MiB default audio storage budget**, checked before allocation.
-  Choose **ColdEdit > Web audio budget > 256 MiB** for more processing room.
+  Choose **ColdEdit > Web audio budget > 256 MiB** or **512 MiB** for more processing room.
   The preference is saved per browser origin; unavailable browser storage leaves
   it active for the session. Lowering the budget is disabled while retained audio
-  exceeds 128 MiB. Input/export limits and the 512 MiB WASM ceiling stay the same.
+  exceeds the selected lower limit. Input/export limits stay the same.
+  **Clear undo/redo and clipboard** in the same submenu manually releases audio
+  retained by history and the clipboard. It keeps the current audio, selection,
+  saved/unsaved status, and playback state; the cleared history and clipboard
+  cannot be restored. The audio-in-use reading drops as obsolete buffers are
+  released, making room for new edits or a lower budget. The WASM heap stays
+  allocated and reuses that space.
   WAV keeps
   its original PCM byte representation; FLAC and MP3 decode to float32 PCM.
   48 kHz stereo float32 consumes about 22 MiB per minute (roughly 5m50s in 128 MiB).
@@ -98,7 +104,8 @@ Releases, where Windows and Linux packages are published.
   the retained-audio budget. Temporary import files are removed after reading;
   export files are removed after creating a download. Only the latest download
   Blob is retained, and is released on another import/export or page close.
-- WASM memory starts at 128 MiB and can grow to 512 MiB. This is an address-space
+- WASM memory starts at 128 MiB and can grow to 1 GiB, leaving room for the
+  512 MiB audio budget plus working buffers and runtime data. This is an address-space
   capacity, **not** a limit on total browser memory: JavaScript file buffers,
   download Blobs, graphics, and browser resources are additional. The WASM heap
   does not shrink, but freed audio storage is reusable.
@@ -179,6 +186,7 @@ node tests/web-smoke.cjs
 node tests/web-lifecycle.cjs
 node tests/web-toolbar.cjs
 node tests/web-wheel.cjs
+node tests/web-follow.cjs
 node tests/web-features.cjs
 node tests/web-cleanup.cjs
 node tests/web-selection.cjs

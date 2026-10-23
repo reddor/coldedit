@@ -65,7 +65,10 @@ EM_JS(int, saveBrowserWheelZoom, (bool zoom), {
     catch (_) { return 0; }
 });
 EM_JS(unsigned, loadBrowserAudioBudget, (), {
-    try { return localStorage.getItem('coldedit.audioBudgetMiB') === '256' ? 256 : 128; }
+    try {
+        const saved = localStorage.getItem('coldedit.audioBudgetMiB');
+        return saved === '512' ? 512 : saved === '256' ? 256 : 128;
+    }
     catch (_) { return 128; }
 });
 EM_JS(int, saveBrowserAudioBudget, (unsigned mib), {

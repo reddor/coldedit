@@ -415,9 +415,18 @@ static void memoryRecoveryTests() {
         web::checkAudio(web::defaultAudioLimit);
         held.resize(web::defaultAudioLimit + 1);
         CHECK(!web::setAudioLimit(web::defaultAudioLimit));
-        CHECK(!web::setAudioLimit(512ull * 1024 * 1024));
+        CHECK(!web::setAudioLimit(384ull * 1024 * 1024));
         try { web::checkAudio(web::defaultAudioLimit); CHECK(false); }
         catch (const web::AudioBudgetExceeded& e) { CHECK(e.additionalBytes == web::defaultAudioLimit); CHECK(std::string(e.what()).find("256 MiB") != std::string::npos); }
+        CHECK(web::setAudioLimit(web::maximumAudioLimit));
+        held.resize(web::extendedAudioLimit + 1);
+        CHECK(!web::setAudioLimit(web::extendedAudioLimit));
+        CHECK(!web::setAudioLimit(web::defaultAudioLimit));
+        held.resize(web::maximumAudioLimit);
+        web::checkAudio(0);
+        throws([] { web::checkAudio(1); });
+        throws([&] { held.resize(web::maximumAudioLimit + 1); });
+        CHECK(web::audioBytes.load() == web::maximumAudioLimit);
     }
     CHECK(web::audioBytes.load() == 0); CHECK(web::setAudioLimit(web::defaultAudioLimit));
 }
@@ -428,6 +437,43 @@ static void viewportTests() {
     v.pan(-1e20); for (int i = 0; i < 100; ++i) v.update(.1); CHECK(v.start >= 0);
     v.zoom(1e-20, .5); for (int i = 0; i < 100; ++i) v.update(.1); CHECK(v.span >= 16);
     v.fit(0); CHECK(v.span == 1); v.zoom(.1, .5); v.update(1); CHECK(std::isfinite(v.start) && std::isfinite(v.span));
+
+    // Continuous scrolling must keep up even when playback crosses several
+    // view widths per frame, without waiting for the cursor to leave the view.
+    for (double width : {16., 480., 48000., 1e6}) for (double dt : {1. / 30, 1. / 144}) {
+        v.fit(1e10); v.show(0, width, true);
+        double cursor = 1e8;
+        v.follow(cursor);
+        for (int i = 0; i < 60; ++i) {
+            const double before = v.start;
+            cursor += 48000 * dt;
+            v.update(dt); v.follow(cursor);
+            const double fraction = (cursor - v.start) / v.span;
+            CHECK(fraction > .66 && fraction < .67);
+            CHECK(std::abs(v.start - before - 48000 * dt) < .001);
+        }
+        for (double factor : {.2, 5.}) {
+            const double before = v.span;
+            v.zoom(factor, .1);
+            const double target = v.targetSpan;
+            for (int i = 0; i < 144; ++i) {
+                cursor += 48000 * dt;
+                v.update(dt); v.follow(cursor);
+                CHECK(v.span >= std::min(before, target) && v.span <= std::max(before, target));
+                const double fraction = (cursor - v.start) / v.span;
+                CHECK(fraction > .66 && fraction < .67);
+                CHECK(v.targetSpan == target);
+            }
+            CHECK(std::abs(v.span - target) < .01);
+        }
+    }
+    v.fit(480000); v.show(0, 48000, true);
+    v.follow(100); CHECK(v.start == 0 && v.targetStart == 0);
+    v.follow(480000); CHECK(v.start == 432000 && v.targetStart == 432000);
+    v.follow(240000); CHECK(v.start == 208000); // Seek / loop back immediately.
+    v.follow(0); CHECK(v.start == 0 && v.targetStart == 0);
+    v.fit(480000); v.follow(240000); CHECK(v.start == 0 && v.span == 480000);
+    v.fit(0); v.follow(0); CHECK(v.start == 0 && v.span == 1);
 }
 static void interactionTests() {
     for (float scale : {1.f, 1.25f, 1.5f, 2.f, 3.f}) {
