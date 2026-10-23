@@ -31,7 +31,7 @@ async function toggleWheelPreference(page) {
   await key(page,'ArrowRight'); await key(page,'End'); await key(page,'Enter');
   assert.equal((await diag(page)).popup_open,false);
 }
-function near(a,b,message) { assert(Math.abs(a-b)<2,`${message}: ${a} vs ${b}`); }
+function near(a,b,message,tolerance=2) { assert(Math.abs(a-b)<tolerance,`${message}: ${a} vs ${b}`); }
 (async () => {
   const browser = await chromium.launch({channel:process.env.COLDEDIT_BROWSER||'msedge',headless:true,args:['--mute-audio']});
   const reports=[];
@@ -51,7 +51,8 @@ function near(a,b,message) { assert(Math.abs(a-b)<2,`${message}: ${a} vs ${b}`);
         let after=await wheel(page,0,-240);
         assert(after.view_span<before.view_span,'unmodified wheel zooms');
         const anchor=(650-70)/1100;
-        near(before.view_start+anchor*before.view_span,after.view_start+anchor*after.view_span,'main zoom keeps pointer sample');
+        // Browser pointer positions are rounded to a physical pixel at fractional DPI.
+        near(before.view_start+anchor*before.view_span,after.view_start+anchor*after.view_span,'main zoom keeps pointer sample',before.view_span/(1100*scale)+2);
         before=after; after=await wheel(page,0,100,'Control');
         near(after.view_span,before.view_span,'Ctrl wheel keeps zoom');
         assert(after.view_start>before.view_start,'Ctrl wheel pans');
