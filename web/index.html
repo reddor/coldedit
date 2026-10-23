@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#101419">
+  <title>ColdEdit — wave editor</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="web-bar">
+    <span><strong>ColdEdit for the web</strong><span class="limits"> · Open 64 MiB · Decoded audio 128 MiB · Export 128 MiB · Audio stays on your device</span></span>
+    <a href="native/ColdEdit-win64.zip" download>Download for Windows ↗</a>
+  </header>
+  <main id="editor-container">
+    <canvas id="canvas" tabindex="0" aria-label="ColdEdit waveform editor. Press F1 for keyboard shortcuts."></canvas>
+    <section id="loading" class="overlay" role="status">
+      <div class="card"><div class="mark">▂ ▅ █ ▃ ▆</div><h1>A little space for sound.</h1><p id="loading-text">Starting the editor…</p><a href="native/ColdEdit-win64.zip" download>Get the native Windows app</a></div>
+    </section>
+  </main>
+  <input id="file-input" type="file" accept=".wav,.flac,.mp3,audio/wav,audio/x-wav,audio/flac,audio/mpeg" hidden>
+  <div id="notice" role="status" hidden><span id="notice-text"></span><a id="download-export" hidden>Download WAV</a><a href="native/ColdEdit-win64.zip" download>Windows app</a><button id="dismiss" aria-label="Dismiss notification">×</button></div>
+  <script src="app.js"></script>
+</body>
+</html>

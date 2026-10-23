@@ -1,0 +1,7 @@
+/build*/
+/dist/
+/artifacts/
+/third_party/*.tar.gz
+/third_party/emsdk/
+*.user
+imgui.ini

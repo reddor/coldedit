@@ -1,0 +1,280 @@
+# ColdEdit
+
+A small native wave editor built around a smooth timeline. C++20, Dear ImGui,
+GLFW, OpenGL 3.3, and miniaudio. Windows x64 is built and verified; the source
+also includes POSIX file mapping and a path-entry fallback for non-Windows
+platforms, but those platforms have not been tested.
+
+## Run
+
+Open `dist/ColdEdit/coldedit.exe` after packaging, or `build/coldedit.exe` after
+building. There is no installer. The Windows release statically links its C/C++
+runtime and its libraries; no separate runtime DLLs are needed.
+
+Drop a WAV, FLAC or MP3 onto the window, or click **ColdEdit > Open audio**.
+The editor starts empty until you open your audio.
+
+A WebAssembly build is also available in `dist/Web` and `dist/ColdEdit-web.zip`.
+It runs locally in a desktop browser, with a **64 MiB input limit** and a
+**128 MiB shared audio memory budget** and **128 MiB export limit**, and links to the included native Windows download for
+larger recordings. See [WEB.md](WEB.md) for running, building, hosting, and
+browser-specific memory behavior.
+
+```powershell
+.\build\coldedit.exe 'C:\Audio\recording.wav'
+```
+
+## What works
+
+- Mono and stereo RIFF/WAVE: 8/16/24/32-bit PCM, 32-bit float, standard PCM/float
+  extensible headers with matching valid and container bit depths.
+- Mono/stereo FLAC import and 16/24-bit FLAC export using libFLAC 1.5.0, plus
+  MP3 import using dr_mp3. Original sample rates are preserved; MP3 gapless
+  delay/padding metadata is honored when present. MP3 export is not included.
+  Compressed imports run on a cancellable worker. Native decoding streams to a
+  temporary mapped float WAV (up to 4 GiB), and the browser enforces its shared
+  audio budget against both declared duration and actual decoded output.
+- Pointer-anchored animated zoom, continuous wheel/trackpad scrolling,
+  middle-button panning, full-file navigator, selection autoscroll, exact
+  sample-range entry, and connected samples/dots at close zoom.
+- Automatic high-DPI layout and crisp font rendering, including live scale
+  changes when moving between monitors. Waveforms use physical-pixel detail.
+- Adjustable selection boundaries: drag either edge or its ruler handle.
+  The opposite edge stays fixed; crossing it and autoscrolling are supported.
+- Drag inside a selection to move its range without moving audio. Cut and Delete
+  retain the exact range, including any portion beyond the new audio end.
+- Paste into an active selection adds the clipboard signal at its start, stopping
+  at the shorter of the clipboard or selection. It neither repeats nor stretches.
+  The remaining selection stays unchanged; mixing beyond EOF extends the audio.
+  Paste replace is separate; paste without a selection inserts at the cursor.
+- Play, pause, seek, loop the selection or file, follow playback, output meters,
+  monitor gain, and independent vertical waveform scale.
+- Cut, copy, paste, delete, trim, silence, reverse, gain, normalize to -1 dBFS,
+  and 128 undo steps. Clipboard audio can cross documents when the channel count
+  and sample rate match.
+- Fade in/out over the selection, with Linear or Smooth curves and linked
+  channels. Fades remain intact through copy, trim, reverse, and undo/redo.
+- Insert silence at the cursor using seconds or an exact sample count. Audio
+  after the cursor moves right; the inserted interval becomes the selection.
+- Save selection as WAV or FLAC directly, without trimming the document or changing history.
+- Optional zero-crossing snapping (5 ms search) and 1–10 ms Smooth edge fades.
+  Automatic fades cover cut/delete/insertion or replacement paste/trim/insert
+  silence in one undo step. Additive paste keeps the original signal intact.
+- Extract left/right as mono, mix stereo to mono using `(L+R)/2`, swap channels,
+  and invert both or either channel's polarity. Channel conversion applies to
+  the whole document; polarity uses the selection, or the whole file.
+- Cleanup dialog with Preview, Bypass, Apply, and cancellation: per-channel DC
+  removal, linked peak normalization from -60 to 0 dBFS, and 12 dB/octave
+  Butterworth high-pass/low-pass filters with adjustable cutoff.
+- The ColdEdit logo opens a popup menu for file, editing, selection, processing,
+  playback, and view commands. One toolbar combines playback controls with
+  Undo/Redo, Cut/Copy/Paste, Delete, Trim, Fit, and Zoom to selection. Open and
+  Export live in the menu. Playhead, duration, monitor gain, and output meters
+  stay visible at the top of the right sidebar while the inspector scrolls.
+- Cancellable background export to 16-bit PCM, 24-bit PCM, or 32-bit float WAV,
+  and 16/24-bit FLAC (compression level 5),
+  at the original sample rate. Export always writes a **new** file. Existing
+  destinations are rejected. Unsaved edits prompt before close/open; exporting
+  from that prompt completes the pending close/open after success.
+
+Fades require a selection; its length sets the fade duration. Linear is the
+default; Smooth uses an S-shaped gain curve. A one-sample fade produces silence.
+Other effects apply to the selection, or the whole file if nothing is selected.
+Choose the format in **ColdEdit > Export format** or the inspector's format
+selector, then **Export audio** or **Save selection**. FLAC stores integer PCM:
+samples are rounded to the selected bit depth and clipped at full scale, just
+like integer WAV export. Float WAV preserves headroom. Metadata tags/artwork
+are not copied to exported files; sample rate conversion is not included.
+
+Edits pause playback. Monitor gain does not affect export. Export audio includes
+the whole edited timeline; Save selection includes only the selected range,
+with all edits applied, and leaves the document's unsaved state unchanged.
+Save selection includes only the range that overlaps existing audio.
+Range dragging preserves length even when
+zero-crossing snapping is enabled. Mixed audio keeps float headroom; signals
+above full scale can clip in playback or integer WAV export. Normalize if needed.
+
+## Controls
+
+| Input | Action |
+| --- | --- |
+| Wheel | Zoom at pointer in the main waveform |
+| Ctrl + wheel / horizontal wheel | Pan the main waveform |
+| Wheel over navigator | Zoom around the current view's center |
+| Middle-button drag | Direct pan |
+| Alt + wheel | Vertical waveform scale |
+| Drag / Shift-click | Select / extend selection |
+| Drag inside selection | Move range, preserving its length and the audio |
+| Alt-drag | Draw a new range, even inside a selection |
+| Drag selection edge or ruler handle | Adjust start or end; drag beyond view to autoscroll |
+| Double-click / Ctrl+A | Select all |
+| Space | Play / pause |
+| L | Toggle loop |
+| F / Z | Fit file / zoom to selection |
+| + / - | Zoom in / out |
+| Home / End | Jump to start / end |
+| Left / Right | Pan by 8% of the view |
+| Ctrl+X / C / V | Cut / copy / paste |
+| Ctrl+V with selection | Add clipboard signal into selection |
+| Ctrl+Shift+V | Replace selection with clipboard audio |
+| Delete / Ctrl+T | Delete / trim selection |
+| R | Reverse selected range or file |
+| I / O | Fade in / fade out selection |
+| J | Snap selection/cursor to nearby zero crossings |
+| Insert | Insert silence at cursor |
+| Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y | Undo / redo |
+| Escape | Clear selection |
+| Ctrl+O / Ctrl+E / Ctrl+S | Open / export / export |
+| Ctrl+Shift+E | Save selected audio in the chosen WAV/FLAC format |
+| F1 | Shortcut reference |
+| F10 | Open main menu; arrows and Enter navigate, Escape dismisses |
+
+**ColdEdit > View > Wheel zooms by default** swaps Wheel and Ctrl+wheel in the
+main waveform. The preference is saved across launches (per browser origin on
+the web). Alt+wheel still adjusts vertical scale; the navigator always zooms
+around the current view. Sample rate, channels, and source bit depth/format
+appear in the bottom status bar.
+
+## Build and verify
+
+On Windows, install Visual Studio with **Desktop development with C++** and its
+CMake tools. The script discovers the toolchain using `vswhere`; a developer
+shell is optional.
+
+```powershell
+.\build.ps1 -Test -Smoke -Package
+.\build.ps1 -Run
+```
+
+The first configure fetches pinned, SHA-256-verified source archives. If present,
+`third_party/{imgui,glfw,miniaudio,flac,dr_libs}.tar.gz` are used as offline caches. This
+workspace already includes these caches. They are ignored by Git.
+
+From an initialized C++ toolchain shell:
+
+```text
+cmake --preset release
+cmake --build --preset release --parallel
+ctest --preset release
+```
+
+`cmake --preset core` builds the storage/editing tests and benchmark without
+fetching UI/audio libraries. `COLDEDIT_SANITIZE=ON` enables address and undefined
+behavior sanitizers on Clang/GCC. A 64-bit process is required for large mappings.
+
+The smoke suite creates hidden, real OpenGL windows at the monitor's native
+scale, 100%, 150%, and 200%, then cycles through scale changes in one window.
+Each case generates disposable test audio, tests undo/redo/paste, plays silently,
+and injects selection and wheel input. Four boundary-drag assertions cover moving
+either edge, crossing, and autoscroll. Font sizing and atlas rebuild counts
+are checked too. Each case writes a framebuffer BMP and JSON timing report
+under `artifacts/`. The suite requires a graphical session and OpenGL 3.3.
+
+```powershell
+.\tests\smoke.ps1
+.\build\coldedit.exe --smoke-test --screenshot artifacts\smoke.bmp --report artifacts\smoke.json
+.\build\coldedit_benchmark.exe
+```
+
+The standalone benchmark creates and removes a 256 MiB WAV in its working
+directory. It measures mapping, peak construction, 128 edits, and 250 stereo
+waveform queries at 1,600 columns across changing zoom levels. See
+[PERFORMANCE.md](PERFORMANCE.md) for the measured results and their scope.
+
+## How it stays small
+
+Native WAV audio is read through a read-only file mapping. FLAC/MP3 decoding
+streams through small blocks into a temporary float WAV, then maps it read-only.
+There is no whole-file decoded float heap buffer on native. The OS manages mapped pages; they may appear in the working set
+and can be reclaimed under memory pressure. Mapping a file does **not** mean
+that its full size is private heap memory.
+
+Each source builds a min/max pyramid on a cancellable worker: 256 samples per
+base block, then 16:1 aggregation. Stereo sources also cache sum/difference
+peaks so channel cancellation is represented correctly after mono conversion.
+Float extrema preserve float-WAV headroom.
+The base stride increases for large sources to keep the cache below 32 MiB per
+source. Typical 16-bit stereo audio uses about 3.33% of its file size for peaks
+(mono about 1.67%). Coarse
+queries include overlapping edge blocks, so overview extrema are conservative;
+fine zoom reads exact samples. No full-file scan runs on the drawing thread.
+Visible waveform columns are cached until the view, edit state, resolution,
+or peak availability changes, so dragging a selection reuses their extrema.
+
+The timeline is a piece table. A piece references a source range, direction,
+gain, and compact fade envelopes; silence has no sample storage. Fade envelopes
+are evaluated by playback/export and conservatively bound cached waveform peaks.
+Clipboard, history, export, and playback
+share source mappings. Each edit stores only timeline metadata. Adjacent
+compatible pieces merge. Many small edits still increase metadata and query
+cost; multiple retained sources each retain their own peak cache. Channel tools
+use small mixing matrices and normalization uses gain metadata.
+
+DC removal and filters render only the affected range on a worker. Native
+processing streams through a 32 KiB block into a temporary float WAV, then maps
+it read-only; it does not allocate a full decoded recording in RAM. Temporary
+files are released when no preview, clipboard, playback, or undo state needs
+them. Undo retains the original samples; a process crash may leave temporary
+files in the system temporary directory. The browser uses an enforced shared
+128 MiB budget for imported PCM and rendered effects, including previews and
+history. See WEB.md for allocations outside this audio-storage budget.
+See WEB.md for the resulting limit on large/repeated processing operations.
+
+Zero-crossing snapping is optional and defaults off. Mono picks the nearest
+crossing within 5 ms; stereo picks the quietest nearby crossing across both
+channels, since their zero crossings need not coincide. Exact sample entry is
+never snapped. Edge fades also default off (3 ms when enabled); they attenuate
+both sides of an edit without moving sample boundaries or changing duration.
+Filters preserve range length, initialize from the range's first sample, and
+do not add a tail outside it. Use edge fades when joining processed regions.
+Filter coefficients follow the [W3C Audio EQ Cookbook](https://www.w3.org/TR/audio-eq-cookbook/).
+
+A worker reads and converts samples into a fixed 16,384-frame stereo ring.
+The audio callback only copies prepared floats, updates atomic state, and
+applies monitor gain: no file reads, allocation, locks, or device commands.
+Generation tags invalidate pre-seek audio. Playback state and generation share
+an atomic so an old end-of-file cannot stop a newly started transport. The
+worker sleeps on a condition variable when idle. The UI uses vsync while
+active and waits for OS events while idle.
+
+## Deliberate limits
+
+This is a single-document waveform editor. It does not yet include MP3 encoding,
+recording, multitrack mixing, effects plugins, spectrum tools,
+project persistence, or RF64. RIFF exports are limited to 4 GiB. History is
+session-only; export before quitting to keep edits. WAV metadata chunks are
+not copied to exports.
+
+Monitoring uses linear interpolation into a 48 kHz stereo stream; it is not a
+mastering-quality sample-rate converter. Export preserves original-rate samples
+and does not use the monitoring resampler. Integer export rounds and clips,
+without dither; float export preserves finite headroom. Peak normalization
+measures sample peaks, not inter-sample true peaks. Automated playback checks
+verify sample delivery; subjective audio quality has not been listening-tested.
+
+## Source map and dependencies
+
+- `src/audio_file.*`: mapping, RIFF validation, sample access, peak pyramid.
+- `src/codecs.*`, `src/dr_mp3.c`: streaming FLAC/MP3 decoding and FLAC encoding.
+- `src/document.*`: piece table, editing/history, normalization scan, export.
+- `src/processing.*`: cleanup analysis and streaming filter processing.
+- `src/playback.*`: streaming worker, SPSC ring, miniaudio callback.
+- `src/viewport.hpp`: double-precision camera and exponential animation.
+- `src/interaction.hpp`: DPI metrics and selection-boundary dragging.
+- `src/scaled_draw.hpp`: logical-coordinate drawing at the current DPI scale.
+- `src/editor.*`: native UI, selection, input, jobs and smoke scenarios.
+- `src/platform.*`: dialogs, saved wheel preference, memory stats, framebuffer capture.
+- `src/main_web.cpp`, `src/web_limits.hpp`, `web/`: browser lifecycle, limits,
+  file import/download, hosting and the native-download link.
+- `tests/`: parser/edit/export tests, transport tests and large-file benchmark.
+
+Pinned dependencies: [Dear ImGui 1.91.9b](https://github.com/ocornut/imgui/tree/v1.91.9b),
+[GLFW 3.4](https://github.com/glfw/glfw/tree/3.4),
+[miniaudio 0.11.23](https://github.com/mackron/miniaudio/tree/0.11.23),
+[libFLAC 1.5.0](https://github.com/xiph/flac/tree/1.5.0) (BSD-style), and
+[dr_mp3 0.7.4](https://github.com/mackron/dr_libs/tree/8159355353a9baeea04416df9626ac2b9afbf97b)
+(public domain or MIT No Attribution).
+Integration follows the [ImGui GLFW/OpenGL example](https://github.com/ocornut/imgui/tree/v1.91.9b/examples/example_glfw_opengl3)
+and [miniaudio device callback documentation](https://miniaud.io/docs/manual/index.html).
+Their license texts are included in packaged builds. System fonts are loaded
+from the local Windows installation and are not redistributed.

@@ -1,0 +1,9 @@
+{
+  "version": 6,
+  "configurePresets": [
+    { "name": "release", "displayName": "Release", "generator": "Ninja", "binaryDir": "${sourceDir}/build", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_TRY_COMPILE_CONFIGURATION": "Release" } },
+    { "name": "core", "displayName": "Core tests only (no UI dependencies)", "inherits": "release", "binaryDir": "${sourceDir}/build-core", "cacheVariables": { "COLDEDIT_BUILD_APP": "OFF" } }
+  ],
+  "buildPresets": [ { "name": "release", "configurePreset": "release" }, { "name": "core", "configurePreset": "core" } ],
+  "testPresets": [ { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } }, { "name": "core", "configurePreset": "core", "output": { "outputOnFailure": true } } ]
+}
