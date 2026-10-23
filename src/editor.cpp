@@ -1032,7 +1032,6 @@ void Editor::emptyState(ImVec2 p, ImVec2 size) {
         const float width = font->CalcTextSizeA(fontSize, std::numeric_limits<float>::max(), 0, value).x / dpi_.layout;
         label({cx - width * .5f, y}, value, color, font);
     };
-    centeredLabel(cy - 5, "Make room for your sound.", text, titleFont_);
     centeredLabel(cy + 33, compact_ ? "Open a WAV, FLAC or MP3 file." : "Drop a WAV, FLAC or MP3 file here to get started.", muted, bodyFont_);
     ImGui::SetCursorScreenPos(px({cx - 72.5f, cy + 78})); if (button("Open audio", {145, 40}, true)) openDialog();
     if (!compact_ || size.y > 330) centeredLabel(cy + 145, compact_ ? "Audio stays on your device." : "WAV / FLAC / MP3    /    MONO & STEREO", muted, bodyFont_);

@@ -52,7 +52,7 @@ private:
     std::vector<Piece> clipboard_;
     unsigned clipboardRate_ = 0, clipboardChannels_ = 0;
     Frame anchor_ = 0, head_ = 0, cursor_ = 0;
-    bool selecting_ = false, loop_ = false, follow_ = true, close_ = false;
+    bool selecting_ = false, loop_ = false, follow_ = false, close_ = false;
     bool fullSelectionAtClick_ = false;
     bool wheelZooms_ = true;
     bool compact_ = false, compactTools_ = false;

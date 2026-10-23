@@ -152,10 +152,11 @@ the web). Alt+wheel still adjusts vertical scale; the navigator always zooms
 around the current view. Sample rate, channels, and source bit depth/format
 appear in the bottom status bar.
 
-**Follow playback** keeps the playhead about two-thirds across the waveform
-while the audio scrolls underneath, stopping at the file's boundaries. Zooming,
-panning, and selecting keep this setting enabled; turn it off in the inspector
-or **ColdEdit > Playback > Follow playback** to explore freely during playback.
+**Follow playback** is off by default. When enabled, the view stays put until
+the playhead reaches about two-thirds across the waveform, then scrolls forward
+to keep it there, stopping at the file's boundary. Zooming, panning, and selecting
+preserve this setting; toggle it in the inspector or
+**ColdEdit > Playback > Follow playback**.
 
 ## Build and verify
 

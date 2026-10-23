@@ -65,7 +65,7 @@ async function load(page, name='browser-test.wav', data=original) {
       const crossedEnd = state.selection_end;
       await drag(page,350,350,750,350);
       state = await diag(page); assert.equal(state.selection_start,crossedEnd); assert(state.selection_end>crossedEnd);
-      assert.equal(state.follow_playback,true,'selection edits preserve follow playback');
+      assert.equal(state.follow_playback,false,'selection edits preserve follow playback');
       // Pointer anchored zoom and wheel pan must reach the app, not zoom the page.
       await page.mouse.move(650,380); await page.mouse.wheel(0,-240);
       await page.waitForFunction(() => window.coldeditWeb.diagnostics().view_span < 192000*.9);

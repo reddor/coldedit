@@ -18,7 +18,7 @@ async function wheel(page, x, y, modifier) {
   await page.mouse.wheel(x,y); await tick(page);
   if (modifier) await page.keyboard.up(modifier);
   const state = await settled(page);
-  assert.equal(state.follow_playback,true,'wheel navigation preserves follow playback');
+  assert.equal(state.follow_playback,false,'wheel navigation preserves follow playback');
   return state;
 }
 async function load(page) {
@@ -72,7 +72,7 @@ function near(a,b,message,tolerance=2) { assert(Math.abs(a-b)<tolerance,`${messa
           after=await wheel(page,0,-100);
           assert(after.view_span<before.view_span);
           near(before.view_start+before.view_span/2,after.view_start+after.view_span/2,'navigator keeps view center');
-          assert.equal(after.follow_playback,true);
+          assert.equal(after.follow_playback,false);
         }
         // Holding the navigator after a click must not snap zoom back to the pointer.
         await page.mouse.move(800,872); await page.mouse.down(); await tick(page);

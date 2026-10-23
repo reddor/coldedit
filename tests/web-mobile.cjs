@@ -52,7 +52,7 @@ async function surface(p, width, height) {
       await p.touchscreen.tap(toolbarX + 118,toolbarY); await tick(p); assert((await diag(p)).frames < 192000,'touch Cut edits selection');
       await p.touchscreen.tap(toolbarX + 22,toolbarY); await tick(p); assert.equal((await diag(p)).frames,192000,'touch Undo restores audio');
       await p.touchscreen.tap(toolbarX + 262,toolbarY); await tick(p); assert((await diag(p)).view_target_span < 192000,'touch zoom button works');
-      assert.equal((await diag(p)).follow_playback,true,'touch zoom preserves follow playback');
+      assert.equal((await diag(p)).follow_playback,false,'touch zoom preserves follow playback');
       await p.screenshot({path:`artifacts/mobile-editor-${width}.png`});
       await p.touchscreen.tap(width - 48,76); await tick(p); assert.equal((await diag(p)).tools_open,true);
       await p.screenshot({path:`artifacts/mobile-tools-${width}.png`});

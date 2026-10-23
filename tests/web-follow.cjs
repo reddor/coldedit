@@ -20,16 +20,16 @@ async function toggleFollow(page) {
   await key(page,'ArrowRight'); await key(page,'End'); await key(page,'Enter');
   assert.equal((await diag(page)).popup_open,false);
 }
-async function samples(page) {
-  return page.evaluate(() => new Promise(resolve => {
+async function samples(page, count=24) {
+  return page.evaluate(count => new Promise(resolve => {
     const result=[];
     function sample() {
       const d=coldeditWeb.diagnostics();
       if (!result.length || d.frame_count!==result.at(-1).frame_count) result.push(d);
-      if (result.length===24) resolve(result); else requestAnimationFrame(sample);
+      if (result.length===count) resolve(result); else requestAnimationFrame(sample);
     }
     requestAnimationFrame(sample);
-  }));
+  }), count);
 }
 async function tracks(page) {
   const frames=await samples(page);
@@ -59,15 +59,31 @@ async function zoom(page, x, y, delta) {
         await page.waitForFunction(()=>document.querySelector('#loading').hidden);
         await page.locator('#file-input').setInputFiles({name:'follow.wav',mimeType:'audio/wav',buffer:fixture()});
         await page.waitForFunction(()=>coldeditWeb.diagnostics().peak_bytes>0);
-        // Seek using the ruler and zoom in while paused.
-        await page.mouse.click(345,140); await settle(page);
+        assert.equal((await diag(page)).follow_playback,false,'follow is off by default');
         for (let i=0;i<8;i++) await key(page,'Equal');
-        assert.equal((await diag(page)).follow_playback,true);
-        await key(page,'Space'); await tracks(page);
+        await page.waitForFunction(()=>{
+          const d=coldeditWeb.diagnostics();
+          return d.view_span===d.view_target_span && d.view_start===d.view_target_start;
+        });
+        // Start left of the threshold in a view well away from the file's start.
+        await page.mouse.click(345,140); await settle(page);
+        const initial=await diag(page);
+        await toggleFollow(page); assert.equal((await diag(page)).follow_playback,true);
+        await key(page,'Space');
+        const waiting=await samples(page,8);
+        assert(waiting.at(-1).view_cursor>waiting[0].view_cursor,'cursor advances before scrolling');
+        assert(waiting.every(d=>d.view_cursor<initial.view_start+initial.view_span*2/3 && d.view_start===initial.view_start),
+          'the view holds until the cursor reaches two thirds');
+        await page.waitForFunction(start=>coldeditWeb.diagnostics().view_start>start,initial.view_start);
+        await tracks(page);
         // Both waveform and navigator zoom keep the cursor anchored during easing.
         await zoom(page,650,380,-240);
         await tracks(page);
         await zoom(page,40,872,100);
+        // Zooming out may leave the cursor before the threshold again.
+        await page.waitForFunction(()=>{
+          const d=coldeditWeb.diagnostics(); return Math.abs(d.view_cursor-d.view_start-d.view_span*2/3)<8;
+        });
         await tracks(page);
         // At a very close zoom, animation lag must never push the cursor off-screen.
         await zoom(page,650,380,-1800);
@@ -91,7 +107,7 @@ async function zoom(page, x, y, delta) {
         await toggleFollow(page); await tracks(page);
         await key(page,'Space');
         assert.deepEqual(errors,[]);
-        console.log(`PASS follow ${scale}x: continuous scrolling, live zoom, pause and explicit toggle`);
+        console.log(`PASS follow ${scale}x: default off, threshold, continuous scrolling, live zoom and explicit toggle`);
       } catch (error) { await captureFailure(page,`web-follow-failure-${scale}`,error); throw error; }
       finally { await context.close(); }
     }

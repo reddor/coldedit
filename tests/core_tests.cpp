@@ -458,10 +458,14 @@ static void viewportTests() {
             const double target = v.targetSpan;
             for (int i = 0; i < 144; ++i) {
                 cursor += 48000 * dt;
-                v.update(dt); v.follow(cursor);
+                v.update(dt);
+                const double left = v.start, targetLeft = v.targetStart;
+                const bool beforeThreshold = cursor < left + v.span * (2.0 / 3.0);
+                v.follow(cursor);
                 CHECK(v.span >= std::min(before, target) && v.span <= std::max(before, target));
                 const double fraction = (cursor - v.start) / v.span;
-                CHECK(fraction > .66 && fraction < .67);
+                if (beforeThreshold) CHECK(v.start == left && v.targetStart == targetLeft);
+                else CHECK(fraction > .66 && fraction < .67);
                 CHECK(v.targetSpan == target);
             }
             CHECK(std::abs(v.span - target) < .01);
@@ -469,9 +473,17 @@ static void viewportTests() {
     }
     v.fit(480000); v.show(0, 48000, true);
     v.follow(100); CHECK(v.start == 0 && v.targetStart == 0);
+    // Threshold is relative to the current view, including after a seek back.
+    v.show(120000, 48000, true);
+    v.follow(130000); CHECK(v.start == 120000 && v.targetStart == 120000);
+    v.follow(151999); CHECK(v.start == 120000 && v.targetStart == 120000);
+    v.follow(152000); CHECK(v.start == 120000 && v.targetStart == 120000);
+    v.follow(152001); CHECK(v.start == 120001 && v.targetStart == 120001);
+    v.follow(160000); CHECK(v.start == 128000 && v.targetStart == 128000);
+    v.follow(125000); CHECK(v.start == 128000 && v.targetStart == 128000);
     v.follow(480000); CHECK(v.start == 432000 && v.targetStart == 432000);
-    v.follow(240000); CHECK(v.start == 208000); // Seek / loop back immediately.
-    v.follow(0); CHECK(v.start == 0 && v.targetStart == 0);
+    v.follow(240000); CHECK(v.start == 432000 && v.targetStart == 432000);
+    v.follow(0); CHECK(v.start == 432000 && v.targetStart == 432000);
     v.fit(480000); v.follow(240000); CHECK(v.start == 0 && v.span == 480000);
     v.fit(0); v.follow(0); CHECK(v.start == 0 && v.span == 1);
 }
