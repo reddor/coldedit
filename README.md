@@ -183,10 +183,14 @@ use the GitHub release for the Ubuntu 22.04 compatibility baseline.
 ### GitHub builds and releases
 
 [GitHub Actions](https://github.com/reddor/coldedit/actions/workflows/build.yml)
-builds and tests Windows, Linux and WebAssembly on pushes to `main`, pull
-requests, and manual runs. Successful jobs retain downloadable package artifacts.
-Linux also runs a real OpenGL smoke test and verifies the packaged relink kit;
-the web job runs the Playwright browser suites. Windows UI smoke tests remain
+builds Windows, Linux and WebAssembly on pushes to `main`, pull requests, and
+manual runs. Documentation-only changes skip CI. Successful jobs retain
+downloadable package artifacts. Ordinary runs keep the fast native tests,
+Linux OpenGL smoke test and packaged relink check, plus one browser smoke test
+at 100% display scale. The full browser suite (editing, codecs, large-file
+boundaries, mobile and multiple display scales) runs only for release tags or
+when **Run workflow → full_tests** is selected. Superseded branch runs are
+canceled automatically. Windows UI smoke tests remain
 available locally with `-Smoke` because hosted runners do not provide the
 required desktop OpenGL session.
 

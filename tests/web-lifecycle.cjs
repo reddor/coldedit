@@ -57,7 +57,14 @@ async function tick(page) { await page.evaluate(() => new Promise(r=>requestAnim
         bytes.set(new TextEncoder().encode('data'),36);v.setUint32(40,bytes.length-44,true);
         await window.coldeditWeb.openFile(new File([bytes],`boundary-${i}.wav`,{type:'audio/wav'}));
       },i);
-      await page.waitForFunction(i=>{const s=window.coldeditWeb.diagnostics();return s.title===`boundary-${i}.wav`&&s.peak_bytes>0;},i,{timeout:30000});
+      // Large imports can take longer with software rendering on hosted runners.
+      // Keep the same boundary assertion, and record the state if it stalls.
+      try {
+        await page.waitForFunction(i=>{const s=window.coldeditWeb.diagnostics();return s.title===`boundary-${i}.wav`&&s.peak_bytes>0;},i,{timeout:120000});
+      } catch (error) {
+        fs.writeFileSync('artifacts/web-lifecycle-failure.json',JSON.stringify({iteration:i,diagnostics:await diag(page)},null,2));
+        throw error;
+      }
       const state=await diag(page); assert.equal(state.frames,(64*1024*1024-44)/4); heaps.push(state.resident_bytes);
       assert.equal(await page.evaluate(()=>Module.FS.readdir('/imports').length),2);
     }

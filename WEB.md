@@ -173,6 +173,11 @@ that browser with `cd tests && npx playwright install --with-deps chromium`.
 Tests require a running server. Native core
 tests also check exact size boundaries and overflow-safe export limits.
 
+Ordinary GitHub pushes and pull requests run only `web-smoke.cjs` at 100% scale.
+Release tags and manual runs with `full_tests` enabled run all suites, with
+100%, 125% and 200% scales where supported, plus the mobile viewport matrix.
+Documentation-only changes skip CI; the full suite also remains available locally.
+
 For codec and decoded-memory verification, generate the small compressed fixtures
 once in a new output directory, then run the isolated server/browser harness:
 
