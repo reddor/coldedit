@@ -320,10 +320,11 @@ verify sample delivery; subjective audio quality has not been listening-tested.
 
 ## License
 
-ColdEdit's original code is licensed under the [MIT License](LICENSE),
-Copyright (c) 2026 Simon Ley. Third-party libraries, fonts, and other bundled
-components retain their own licenses. Release packages include the MIT license
-and the dependency license notices described below.
+ColdEdit is made available under the [MIT License](LICENSE). It was developed
+with AI coding agents, guided by human instructions and feedback. Third-party
+libraries, fonts, and other bundled components retain their own licenses.
+Release packages include the MIT license and the dependency license notices
+described below.
 
 ## Source map and dependencies
 
