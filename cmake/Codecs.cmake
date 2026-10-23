@@ -7,7 +7,7 @@ function(coldedit_codec name url hash)
   FetchContent_Declare(${name} URL "${url}" URL_HASH "SHA256=${hash}"
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE SOURCE_SUBDIR coldedit-no-cmake)
 endfunction()
-coldedit_codec(flac https://github.com/xiph/flac/archive/refs/tags/1.5.0.tar.gz d80ef5facdb21972efe91774da03d6b9abf216aa17093d740fcc411cd8afbb41)
+coldedit_codec(flac https://github.com/xiph/flac/archive/1507800de4b70e21be71f38caa0d9079d0bc6e45.tar.gz d80ef5facdb21972efe91774da03d6b9abf216aa17093d740fcc411cd8afbb41)
 coldedit_codec(dr_libs https://github.com/mackron/dr_libs/archive/8159355353a9baeea04416df9626ac2b9afbf97b.tar.gz b5ecae5b61982997f56e7b51f6c21d8656d4ffca242dd38e5fb3bb23e741c030)
 coldedit_codec(lame https://deb.debian.org/debian/pool/main/l/lame/lame_3.100.orig.tar.gz ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e)
 FetchContent_MakeAvailable(flac dr_libs lame)
