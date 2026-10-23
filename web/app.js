@@ -54,7 +54,7 @@ window.coldeditWeb = {
     if (!file || !started) return;
     if (importing || !Module._coldedit_can_import()) { showNotice('Finish the current operation or close the dialog before opening another audio file.'); return; }
     if (file.size > inputLimit) {
-      showNotice('This audio file is larger than 64 MiB. Use the native Windows app for larger recordings.'); return;
+      showNotice('This audio file is larger than 64 MiB. Use the native app for larger recordings.'); return;
     }
     importing = true;
     try {
@@ -87,10 +87,11 @@ window.coldeditWeb = {
         }
       } finally { Module.FS.close(stream); }
       const flac = path.toLowerCase().endsWith('.flac');
-      const blob = new Blob(parts, {type: flac ? 'audio/flac' : 'audio/wav'});
+      const mp3 = path.toLowerCase().endsWith('.mp3');
+      const blob = new Blob(parts, {type: mp3 ? 'audio/mpeg' : flac ? 'audio/flac' : 'audio/wav'});
       exportUrl = URL.createObjectURL(blob);
       exportLink.href = exportUrl; exportLink.download = path.split('/').pop(); exportLink.hidden = false;
-      exportLink.textContent = flac ? 'Download FLAC' : 'Download WAV';
+      exportLink.textContent = mp3 ? 'Download MP3' : flac ? 'Download FLAC' : 'Download WAV';
       showNotice('Your audio is ready. Save it before closing this tab.');
       exportLink.click();
       return true;

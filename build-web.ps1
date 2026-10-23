@@ -20,17 +20,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Web configure failed.' }
     cmake --build build-web --parallel 4
     if ($LASTEXITCODE -ne 0) { throw 'Web build failed.' }
-    $nativeZip = Join-Path $rootPath 'dist\ColdEdit-win64.zip'
-    if (Test-Path -LiteralPath $nativeZip) {
-        New-Item -ItemType Directory -Force -Path build-web\site\native | Out-Null
-        Copy-Item -LiteralPath $nativeZip -Destination build-web\site\native\ColdEdit-win64.zip -Force
-    }
     if ($Package) {
         cmake --install build-web --prefix dist/Web
         if ($LASTEXITCODE -ne 0) { throw 'Web packaging failed.' }
-        if (-not (Test-Path -LiteralPath $nativeZip)) { throw 'Build the native package first with .\build.ps1 -Package.' }
-        New-Item -ItemType Directory -Force -Path dist\Web\native | Out-Null
-        Copy-Item -LiteralPath $nativeZip -Destination dist\Web\native\ColdEdit-win64.zip -Force
         Copy-Item -LiteralPath web\serve.mjs -Destination dist\Web\serve.mjs -Force
         Copy-Item -LiteralPath WEB.md -Destination dist\Web\WEB.md -Force
         Compress-Archive -Path dist\Web\* -DestinationPath dist\ColdEdit-web.zip -Force

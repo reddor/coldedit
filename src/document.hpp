@@ -63,8 +63,13 @@ private:
     std::size_t historyIndex_ = 0;
     void commit(std::shared_ptr<Timeline> timeline, std::string label);
 };
-enum class ExportFormat { PCM16, PCM24, Float32, FLAC16, FLAC24 };
+enum class ExportFormat { PCM16, PCM24, Float32, FLAC16, FLAC24, MP3VBR, MP3192, MP3320 };
 inline bool isFlac(ExportFormat format) { return format == ExportFormat::FLAC16 || format == ExportFormat::FLAC24; }
+inline bool isMp3(ExportFormat format) { return format == ExportFormat::MP3VBR || format == ExportFormat::MP3192 || format == ExportFormat::MP3320; }
+inline bool isWav(ExportFormat format) { return !isFlac(format) && !isMp3(format); }
+inline const char* exportExtension(ExportFormat format) { return isMp3(format) ? ".mp3" : isFlac(format) ? ".flac" : ".wav"; }
+inline unsigned mp3Bitrate(ExportFormat format) { return format == ExportFormat::MP3192 ? 192 : format == ExportFormat::MP3320 ? 320 : 0; }
+unsigned mp3SampleRate(unsigned sourceRate, unsigned bitrate);
 inline unsigned exportBits(ExportFormat format) {
     return format == ExportFormat::PCM16 || format == ExportFormat::FLAC16 ? 16 : format == ExportFormat::Float32 ? 32 : 24;
 }

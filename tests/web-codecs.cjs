@@ -9,7 +9,7 @@ async function open(p,path,name=path.split('/').pop()){
   await p.waitForFunction(n=>!coldeditWeb.diagnostics().busy&&(coldeditWeb.diagnostics().title===n||coldeditWeb.diagnostics().error),name);
 }
 async function format(p,index){
-  const d=await diag(p), steps=d.selection_end>d.selection_start?9:8;
+  const d=await diag(p), steps=d.selection_end>d.selection_start?8:7;
   await key(p,'F10'); await key(p,'Home');
   for(let i=0;i<steps;i++) await key(p,'ArrowDown');
   await key(p,'ArrowRight');await key(p,'Home');for(let i=0;i<index;i++)await key(p,'ArrowDown');await key(p,'Enter');

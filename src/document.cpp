@@ -263,20 +263,22 @@ void exportAudio(const Timeline& t, const std::filesystem::path& path, ExportFor
     if (std::filesystem::exists(path)) throw std::runtime_error("Choose a new file name. ColdEdit never overwrites an existing audio file.");
     const unsigned bits = exportBits(format);
     const bool flac = isFlac(format);
+    const bool wav = isWav(format);
 #ifdef __EMSCRIPTEN__
-    if (!flac) web::checkExport(std::uint64_t(t.frames), t.channels, bits);
+    if (wav) web::checkExport(std::uint64_t(t.frames), t.channels, bits);
 #endif
     const std::uint64_t extra = format == ExportFormat::Float32 ? 48 : 36;
     const auto bytesPerFrame = t.channels * (bits / 8);
-    if (!bytesPerFrame || t.frames < 0 || (!flac && std::uint64_t(t.frames) > (UINT32_MAX - extra) / bytesPerFrame))
+    if (!bytesPerFrame || t.frames < 0 || (wav && std::uint64_t(t.frames) > (UINT32_MAX - extra) / bytesPerFrame))
         throw std::runtime_error("Export exceeds the RIFF/WAV 4 GiB limit. Export a selection or use a lower bit depth.");
     const std::uint64_t size = std::uint64_t(t.frames) * bytesPerFrame;
-    if (!flac && size + (size & 1) + extra > UINT32_MAX) throw std::runtime_error("Export exceeds the RIFF/WAV 4 GiB limit. Trim the audio or use a lower bit depth.");
+    if (wav && size + (size & 1) + extra > UINT32_MAX) throw std::runtime_error("Export exceeds the RIFF/WAV 4 GiB limit. Trim the audio or use a lower bit depth.");
     auto temp = path; temp += ".coldedit-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".tmp";
     try {
         std::ofstream f(temp, std::ios::binary | std::ios::trunc);
         if (!f) throw std::runtime_error("Cannot create the export file.");
         if (flac) writeFlac(t, f, bits, progress, stop);
+        else if (isMp3(format)) writeMp3(t, f, mp3Bitrate(format), progress, stop);
         else {
         f.write("RIFF", 4); put32(f, std::uint32_t(size + (size & 1) + extra)); f.write("WAVEfmt ", 8); put32(f, 16);
         put16(f, format == ExportFormat::Float32 ? 3 : 1); put16(f, std::uint16_t(t.channels));

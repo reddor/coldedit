@@ -17,7 +17,7 @@ namespace {
 constexpr ImU32 bg = IM_COL32(16, 20, 25, 255), panel = IM_COL32(22, 27, 33, 255), line = IM_COL32(43, 50, 59, 255);
 constexpr ImU32 text = IM_COL32(225, 231, 236, 255), muted = IM_COL32(135, 148, 161, 255);
 constexpr ImU32 teal = IM_COL32(98, 222, 193, 255), blue = IM_COL32(115, 174, 230, 255), amber = IM_COL32(241, 189, 115, 255);
-constexpr const char* exportFormats[] = {"WAV / 16-bit PCM", "WAV / 24-bit PCM", "WAV / 32-bit float", "FLAC / 16-bit", "FLAC / 24-bit"};
+constexpr const char* exportFormats[] = {"WAV / 16-bit PCM", "WAV / 24-bit PCM", "WAV / 32-bit float", "FLAC / 16-bit", "FLAC / 24-bit", "MP3 / VBR high", "MP3 / 192 kbps", "MP3 / 320 kbps"};
 std::string timecode(double frames, unsigned rate, bool precise = false) {
     const double seconds = frames / std::max(1u, rate);
     const auto ms = std::int64_t(std::llround(seconds * 1000));
@@ -224,7 +224,7 @@ void Editor::openDialog() {
 void Editor::exportDialog(bool selectionOnly) {
     if (!document_.timeline() || busy_ || (selectionOnly && !selected())) return;
     selectionExport_ = selectionOnly;
-    const std::string suffix = std::string(selectionOnly ? "-selection" : "-edited") + (isFlac(static_cast<ExportFormat>(exportFormat_)) ? ".flac" : ".wav");
+    const std::string suffix = std::string(selectionOnly ? "-selection" : "-edited") + exportExtension(static_cast<ExportFormat>(exportFormat_));
 #ifdef __EMSCRIPTEN__
     auto name = fromUtf8(utf8(sourcePath_.stem()) + suffix);
     exportTo(std::filesystem::path("/exports") / name.filename(), selectionOnly);
@@ -249,16 +249,16 @@ void Editor::exportTo(const std::filesystem::path& requestedPath, bool selection
     if (!t || (selectionOnly && !selected())) return;
     if (selectionOnly) t = std::make_shared<Timeline>(t->range(first(), last()));
     const auto format = static_cast<ExportFormat>(exportFormat_);
-    auto path = requestedPath; path.replace_extension(isFlac(format) ? ".flac" : ".wav");
+    auto path = requestedPath; path.replace_extension(exportExtension(format));
 #ifdef __EMSCRIPTEN__
-    try { if (!isFlac(format)) web::checkExport(std::uint64_t(t->frames), t->channels, exportBits(format)); }
+    try { if (isWav(format)) web::checkExport(std::uint64_t(t->frames), t->channels, exportBits(format)); }
     catch (const std::exception& e) { error_ = e.what(); continueAfterExport_ = false; return; }
     std::filesystem::remove(path); // Only a private temporary export, never a user's disk file.
 #endif
     const bool closeAfter = !selectionOnly && continueAfterExport_ && pendingClose_;
     const auto openAfter = !selectionOnly && continueAfterExport_ && !pendingClose_ ? pendingPath_ : std::filesystem::path{};
     continueAfterExport_ = false;
-    startJob(selectionOnly ? "Exporting selection" : isFlac(format) ? "Exporting FLAC" : "Exporting WAV", [this, t, path, format](std::stop_token stop) { exportAudio(*t, path, format, &jobProgress_, stop); }, [this, path, t, selectionOnly, closeAfter, openAfter] {
+    startJob(selectionOnly ? "Exporting selection" : isMp3(format) ? "Exporting MP3" : isFlac(format) ? "Exporting FLAC" : "Exporting WAV", [this, t, path, format](std::stop_token stop) { exportAudio(*t, path, format, &jobProgress_, stop); }, [this, path, t, selectionOnly, closeAfter, openAfter] {
 #ifdef __EMSCRIPTEN__
         if (!webDownload(path)) { status_ = "Could not prepare the download. Your edits are still here."; return; }
 #endif
@@ -561,7 +561,10 @@ void Editor::mainMenu() {
         }
         ImGui::Separator();
         if (ImGui::BeginMenu("Export format", !busy_)) {
-            for (int i = 0; i < 5; ++i) if (ImGui::MenuItem(exportFormats[i], nullptr, exportFormat_ == i)) exportFormat_ = i;
+            for (int i = 0; i < IM_ARRAYSIZE(exportFormats); ++i) if (ImGui::MenuItem(exportFormats[i], nullptr, exportFormat_ == i)) exportFormat_ = i;
+            const auto format = static_cast<ExportFormat>(exportFormat_);
+            if (isMp3(format) && t && mp3SampleRate(t->sampleRate, mp3Bitrate(format)) != t->sampleRate)
+                ImGui::TextDisabled("MP3 output: %.2f kHz", mp3SampleRate(t->sampleRate, mp3Bitrate(format)) / 1000.);
             ImGui::EndMenu();
         }
         if (ImGui::MenuItem("Keyboard shortcuts", "F1")) run = [this] { help_ = true; };
@@ -774,12 +777,18 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
     }
 }
 void Editor::overview(ImVec2 p, ImVec2 size) {
-    auto t = document_.timeline(); if (!t) return;
+    auto t = document_.timeline();
     auto d = drawList();
     label(p, "NAVIGATOR", muted);
-    label({p.x + size.x - 197, p.y}, "Drag to explore the whole file", muted);
+    const char* hint = t ? "Drag to explore the whole file" : "No audio loaded";
+    const float hintWidth = ImGui::CalcTextSize(hint).x / dpi_.layout;
+    label({p.x + size.x - hintWidth, p.y}, hint, muted);
     p.y += 26; size.y -= 26;
     d.AddRectFilled(p, {p.x + size.x, p.y + size.y}, panel, 5);
+    if (!t) {
+        d.AddLine({p.x + 8, p.y + size.y * .5f}, {p.x + size.x - 8, p.y + size.y * .5f}, line);
+        return;
+    }
     const int columns = std::max(1, int(std::ceil(size.x * dpi_.raster)));
     const float columnWidth = size.x / columns;
     const bool ready = source_ && source_->peaksReady();
@@ -871,8 +880,14 @@ void Editor::inspector(ImVec2 p, ImVec2 size) {
     }
     ImGui::EndDisabled();
     ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing(); ImGui::TextDisabled("EXPORT FORMAT");
-    ImGui::SetNextItemWidth(-1); ImGui::Combo("##format", &exportFormat_, exportFormats, 5);
-    ImGui::TextDisabled("Original sample rate preserved");
+    ImGui::SetNextItemWidth(-1); ImGui::Combo("##format", &exportFormat_, exportFormats, IM_ARRAYSIZE(exportFormats));
+    const auto format = static_cast<ExportFormat>(exportFormat_);
+    if (isMp3(format)) {
+        ImGui::TextDisabled("Lossy audio / LAME 3.100");
+        if (t && mp3SampleRate(t->sampleRate, mp3Bitrate(format)) != t->sampleRate)
+            ImGui::TextWrapped("MP3 export resamples to %.2f kHz.", mp3SampleRate(t->sampleRate, mp3Bitrate(format)) / 1000.);
+        else ImGui::TextDisabled("Original sample rate preserved");
+    } else ImGui::TextDisabled("Original sample rate preserved");
     ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
     ImGui::Checkbox("Follow playback", &follow_);
     ImGui::TextDisabled("Vertical zoom"); ImGui::SameLine(); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##vertical", &verticalZoom_, .25f, 8, "%.1fx", ImGuiSliderFlags_Logarithmic);
@@ -882,10 +897,15 @@ void Editor::inspector(ImVec2 p, ImVec2 size) {
 void Editor::emptyState(ImVec2 p, ImVec2 size) {
     auto d = drawList(); d.AddRectFilled(p, {p.x + size.x, p.y + size.y}, panel, 8);
     const float cx = p.x + size.x * .5f, cy = p.y + size.y * .45f;
-    label({cx - 122, cy - 5}, "Make room for your sound.", text, titleFont_);
-    label({cx - 165, cy + 33}, "Drop a WAV, FLAC or MP3 file here to get started.", muted);
+    const auto centeredLabel = [&](float y, const char* value, ImU32 color, ImFont* font) {
+        const float fontSize = font->FontSize * ImGui::GetIO().FontGlobalScale;
+        const float width = font->CalcTextSizeA(fontSize, std::numeric_limits<float>::max(), 0, value).x / dpi_.layout;
+        label({cx - width * .5f, y}, value, color, font);
+    };
+    centeredLabel(cy - 5, "Make room for your sound.", text, titleFont_);
+    centeredLabel(cy + 33, "Drop a WAV, FLAC or MP3 file here to get started.", muted, bodyFont_);
     ImGui::SetCursorScreenPos(px({cx - 72.5f, cy + 78})); if (button("Open audio", {145, 40}, true)) openDialog();
-    label({cx - 175, cy + 145}, "WAV / FLAC / MP3    /    MONO & STEREO", muted);
+    centeredLabel(cy + 145, "WAV / FLAC / MP3    /    MONO & STEREO", muted, bodyFont_);
 }
 void Editor::modals() {
     if (confirmDiscard_) { ImGui::OpenPopup("Keep your changes?"); confirmDiscard_ = false; }
@@ -983,7 +1003,7 @@ void Editor::modals() {
     if (help_) { ImGui::OpenPopup("Find your way around"); help_ = false; }
     if (ImGui::BeginPopupModal("Find your way around", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextUnformatted("TIMELINE"); ImGui::Spacing();
-        const char* rows[][2] = {{wheelZooms_ ? "Wheel" : "Ctrl + wheel", "Zoom around the pointer"}, {wheelZooms_ ? "Ctrl + wheel" : "Wheel", "Scroll through audio"}, {"Horizontal wheel", "Scroll through audio"}, {"Navigator wheel", "Zoom around the current view"}, {"Middle-button drag", "Pan directly"}, {"Alt + wheel", "Adjust vertical scale"}, {"Drag / Shift-click", "Select / extend range"}, {"Drag inside / Alt-drag", "Move range / draw new range"}, {"Double-click", "Select all"}, {"Space / L", "Play-pause / toggle loop"}, {"F / Z", "Fit file / zoom to selection"}, {"Ctrl + X / C / V", "Cut / copy / paste (mix into selection)"}, {"Ctrl + Shift + V", "Replace selection with clipboard"}, {"Ctrl + T / Delete", "Trim / delete selection"}, {"Ctrl + Z / Ctrl + Shift + Z", "Undo / redo"}, {"R / Home / End", "Reverse / jump to start / end"}, {"Ctrl + O / Ctrl + E", "Open audio / export audio"}, {"I / O", "Fade in / fade out selection"}, {"Insert", "Insert silence at cursor"}, {"J", "Snap selection to zero crossings"}, {"Ctrl + Shift + E", "Save selected audio (WAV/FLAC)"}};
+        const char* rows[][2] = {{wheelZooms_ ? "Wheel" : "Ctrl + wheel", "Zoom around the pointer"}, {wheelZooms_ ? "Ctrl + wheel" : "Wheel", "Scroll through audio"}, {"Horizontal wheel", "Scroll through audio"}, {"Navigator wheel", "Zoom around the current view"}, {"Middle-button drag", "Pan directly"}, {"Alt + wheel", "Adjust vertical scale"}, {"Drag / Shift-click", "Select / extend range"}, {"Drag inside / Alt-drag", "Move range / draw new range"}, {"Double-click", "Select all"}, {"Space / L", "Play-pause / toggle loop"}, {"F / Z", "Fit file / zoom to selection"}, {"Ctrl + X / C / V", "Cut / copy / paste (mix into selection)"}, {"Ctrl + Shift + V", "Replace selection with clipboard"}, {"Ctrl + T / Delete", "Trim / delete selection"}, {"Ctrl + Z / Ctrl + Shift + Z", "Undo / redo"}, {"R / Home / End", "Reverse / jump to start / end"}, {"Ctrl + O / Ctrl + E", "Open audio / export audio"}, {"I / O", "Fade in / fade out selection"}, {"Insert", "Insert silence at cursor"}, {"J", "Snap selection to zero crossings"}, {"Ctrl + Shift + E", "Save selected audio (WAV/FLAC/MP3)"}};
         if (ImGui::BeginTable("keys", 2, 0, px({510, 0}))) { for (auto& row : rows) { ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextColored(ImVec4(.38f, .87f, .76f, 1), "%s", row[0]); ImGui::TableNextColumn(); ImGui::TextUnformatted(row[1]); } ImGui::EndTable(); }
         ImGui::Spacing(); if (button("Back to the sound", {-1, 36}, true)) ImGui::CloseCurrentPopup(); ImGui::EndPopup();
     }
@@ -1050,15 +1070,16 @@ void Editor::render() {
         statusRight -= 24;
     }
     if (source_) {
-        const auto detail = decimal(source_->sampleRate / 1000., 1) + " kHz   /   " + (document_.timeline()->channels == 2 ? "Stereo" : "Mono") + "   /   " + (source_->format == "WAV" ? std::to_string(source_->bits) + (source_->floating ? "-bit float" : "-bit PCM") : source_->format == "FLAC" ? std::to_string(source_->bits) + "-bit FLAC" : source_->format);
+        const auto detail = decimal(source_->sampleRate / 1000., 1) + " kHz   /   " + (document_.timeline()->channels == 2 ? "Stereo" : "Mono") + "   /   " + (source_->format == "WAV" ? std::to_string(source_->bits) + (source_->floating ? "-bit float" : "-bit PCM") : source_->format);
         statusRight -= ImGui::CalcTextSize(detail.c_str()).x / dpi_.layout;
         label({statusRight, height - 27}, detail, muted);
         statusRight -= 24;
     }
     if (busy_) {
-        ImGui::SetCursorPos(px({statusRight - 140, height - 34}));
+        const float cancelX = std::min(310.f, statusRight - 140);
+        ImGui::SetCursorPos(px({cancelX, height - 34}));
         if (button("Cancel operation", {140, 28})) job_.request_stop();
-        statusRight -= 152;
+        statusRight = cancelX - 12;
     }
     // Long filenames and operation messages cannot cover the audio properties.
     ImGui::PushClipRect(px({24, height - 36}), px({statusRight, height}), true);

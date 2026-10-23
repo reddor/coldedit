@@ -1,0 +1,44 @@
+ColdEdit uses LAME 3.100 (https://lame.sourceforge.io/), Copyright the LAME
+project contributors, under the GNU Library General Public License version 2
+or later. See ../licenses/LAME.txt and lame/COPYING for the complete license.
+LAME is statically linked, encoder only; the optional mpglib decoder is disabled.
+The upstream source is unmodified. Lame.cmake and lame-config.h.in describe our
+build configuration. Original source archive SHA-256:
+ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
+
+This directory accompanies the executable under LGPL section 6(a). It contains
+LAME's source, ColdEdit's object files, other linked static libraries, and the
+scripts needed to rebuild LAME and relink this exact ColdEdit build. The other
+libraries' notices are in ../licenses. Keep this directory with distributed
+copies, including the hosted web download; it is not loaded at app startup.
+
+You may modify this copy of ColdEdit for your own use and reverse engineer it
+for debugging such modifications, including modifications to LAME. LAME's own
+source remains licensed under the LGPL. This notice grants no broader license
+to redistribute or reuse ColdEdit code separately from these purposes.
+
+TOOLCHAIN.txt records the compiler and platform used for this particular kit.
+Use a matching toolchain when relinking precompiled application objects.
+
+Windows: use the matching MSVC x64 compiler and Windows SDK,
+CMake >= 3.24, and Ninja, from an x64 developer shell. In this directory:
+  cmake -S . -B out -G Ninja -DCMAKE_BUILD_TYPE=Release
+  cmake --build out
+The result is out/coldedit.exe. Close ColdEdit before replacing its executable.
+
+Linux: use the matching GCC/G++ toolchain, CMake >= 3.24, Ninja and OpenGL
+development libraries (libgl1-mesa-dev on Ubuntu). In this directory:
+  cmake -S . -B out -G Ninja -DCMAKE_BUILD_TYPE=Release
+  cmake --build out
+The result is out/coldedit. Keep the original package's licenses and relink kit.
+
+Web: activate Emscripten 4.0.23 and install CMake/Ninja. In this directory:
+  emcmake cmake -S . -B out -G Ninja -DCMAKE_BUILD_TYPE=Release
+  cmake --build out
+Copy out/coldedit.js, out/coldedit.wasm, and out/coldedit.data into a copy of the
+original web package. Serve it with the included serve.mjs and isolation headers.
+The compiler obtains its standard GLFW 3.4 contrib port as in the original build.
+
+Edit lame/ before building to use a modified library. The existing application
+objects use the public LAME 3.100 C ABI; preserve that ABI when replacing LAME.
+No code signing or checks prevent running your relinked build. No warranty.

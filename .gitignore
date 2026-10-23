@@ -5,3 +5,4 @@
 /third_party/emsdk/
 *.user
 imgui.ini
+/tests/node_modules/

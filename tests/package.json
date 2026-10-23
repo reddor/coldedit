@@ -1,0 +1,7 @@
+{
+  "name": "coldedit-browser-tests",
+  "private": true,
+  "devDependencies": {
+    "playwright": "1.64.1"
+  }
+}

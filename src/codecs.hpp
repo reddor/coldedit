@@ -15,4 +15,6 @@ void decodeAudio(const std::uint8_t* bytes, std::size_t size,
 struct Timeline;
 void writeFlac(const Timeline& timeline, std::ostream& output, unsigned bits,
     std::atomic<float>* progress, std::stop_token stop);
+void writeMp3(const Timeline& timeline, std::ostream& output, unsigned bitrate,
+    std::atomic<float>* progress, std::stop_token stop, std::uint64_t byteLimit = UINT64_MAX);
 }

@@ -72,8 +72,9 @@ async function tick(page) { await page.evaluate(() => new Promise(r=>requestAnim
       assert.equal((await diag(page)).ui_scale,scale);
     }
     assert.equal((await diag(page)).dpi_rebuilds,4);
-    const native = await page.request.get(url+'/native/ColdEdit-win64.zip'); assert.equal(native.status(),200);
-    assert.equal((await native.body()).subarray(0,2).toString(),'PK');
+    const native = page.locator('.web-bar a');
+    assert.equal(await native.getAttribute('href'),'https://github.com/reddor/coldedit/releases');
+    assert.equal(await native.getAttribute('target'),'_blank');
     assert.deepEqual(errors,[]);
     fs.writeFileSync('artifacts/web-lifecycle.json',JSON.stringify({passed:true,heaps,diagnostics:await diag(page)},null,2));
     await page.screenshot({path:'artifacts/web-large-file.png'});

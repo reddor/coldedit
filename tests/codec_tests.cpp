@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <sstream>
 #include <vector>
 using namespace coldedit;
 #define CHECK(x) do { if (!(x)) throw std::runtime_error(std::string("Failed: ") + #x + " at " + std::to_string(__LINE__)); } while (0)
@@ -26,6 +27,55 @@ void verify(const Timeline& t, const AudioFile& decoded, unsigned bits) {
         const auto expected = float(std::llround(std::clamp(t.sample(i, c) * scale, -scale, scale - 1)) / scale);
         CHECK(decoded.sample(i, c) == expected);
     }
+}
+float mp3Signal(Frame frame, unsigned channel, unsigned rate) {
+    return float(.35 * std::sin(6.283185307179586 * double(frame) / rate * (channel ? 680 : 440)));
+}
+void mp3ExportTests(const std::filesystem::path& root) {
+    unsigned serial = 0;
+    for (unsigned rate : {8000u, 11025u, 22050u, 32000u, 44100u, 48000u, 88200u, 96000u})
+        for (unsigned channels : {1u, 2u}) for (auto format : {ExportFormat::MP3VBR, ExportFormat::MP3192, ExportFormat::MP3320}) {
+            auto audio = AudioFile::render(rate + 137, rate, channels, [=](Frame at, Frame count, float* out) {
+                for (Frame f = 0; f < count; ++f) for (unsigned c = 0; c < channels; ++c)
+                    out[f * channels + c] = mp3Signal(at + f, c, rate);
+            }, nullptr, {});
+            Document doc; doc.open(audio);
+            const auto path = root / ("mp3-" + std::to_string(serial++) + ".mp3");
+            exportAudio(*doc.timeline(), path, format);
+            auto decoded = AudioFile::open(path);
+            const auto outRate = mp3SampleRate(rate, mp3Bitrate(format));
+            CHECK(decoded->sampleRate == outRate); CHECK(decoded->channels == channels);
+            const auto expectedFrames = Frame(std::llround(double(audio->frames) * outRate / rate));
+            if (std::abs(decoded->frames - expectedFrames) > 1)
+                throw std::runtime_error("MP3 duration: " + std::to_string(rate) + " Hz, format " + std::to_string(int(format)) + ", got " + std::to_string(decoded->frames) + ", expected " + std::to_string(expectedFrames));
+            double energy = 0, error = 0;
+            for (Frame f = outRate / 10; f < decoded->frames - outRate / 10; ++f) for (unsigned c = 0; c < channels; ++c) {
+                const double expected = mp3Signal(f, c, outRate), actual = decoded->sample(f, c);
+                CHECK(std::isfinite(actual)); energy += expected * expected; error += (actual - expected) * (actual - expected);
+            }
+            CHECK(error / energy < .025);
+            const auto original = read(path); throws([&] { exportAudio(*doc.timeline(), path, format); }); CHECK(read(path) == original);
+            std::ostringstream limited(std::ios::binary);
+            throws([&] { writeMp3(*doc.timeline(), limited, mp3Bitrate(format), nullptr, {}, 512); });
+            CHECK(limited.str().size() <= 512);
+        }
+    for (Frame length : {1, 17, 576, 1152, 1201}) for (auto format : {ExportFormat::MP3VBR, ExportFormat::MP3192, ExportFormat::MP3320}) {
+        Timeline t; t.sampleRate = 44100; t.pieces.push_back({nullptr, 0, length}); t.rebuild();
+        const auto path = root / ("short-" + std::to_string(serial++) + ".mp3");
+        exportAudio(t, path, format); CHECK(AudioFile::open(path)->frames == length);
+    }
+    Timeline empty; throws([&] { exportAudio(empty, root / "empty.mp3", ExportFormat::MP3VBR); });
+    CHECK(!std::filesystem::exists(root / "empty.mp3"));
+    Timeline large; large.pieces.push_back({nullptr, 0, 48000 * 100}); large.rebuild();
+    std::stop_source stop; std::atomic<float> progress{0}; bool wasCancelled = false;
+    const auto path = root / "cancelled.mp3";
+    std::jthread worker([&] {
+        try { exportAudio(large, path, ExportFormat::MP3320, &progress, stop.get_token()); }
+        catch (const std::exception& e) { wasCancelled = std::string(e.what()).find("cancel") != std::string::npos; }
+    });
+    while (progress.load() == 0) std::this_thread::yield();
+    stop.request_stop(); worker.join(); CHECK(wasCancelled); CHECK(!std::filesystem::exists(path));
+    for (const auto& file : std::filesystem::directory_iterator(root)) CHECK(file.path().extension() != ".tmp");
 }
 void tests(const std::filesystem::path& root) {
     for (unsigned channels : {1u, 2u}) for (auto format : {ExportFormat::FLAC16, ExportFormat::FLAC24}) {
@@ -93,8 +143,8 @@ int main(int argc, char** argv) {
             std::cout << "Generated web limit fixtures in " << root << '\n'; return 0;
         }
         auto root = std::filesystem::current_path() / ("coldedit-codecs-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-        std::filesystem::create_directory(root); tests(root); std::filesystem::remove_all(root);
-        std::cout << "PASS: FLAC PCM/edits/selection round trips, unknown lengths, corruption, cancellation, MP3 signal/gapless conversion, budget accounting.\n";
+        std::filesystem::create_directory(root); tests(root); mp3ExportTests(root); std::filesystem::remove_all(root);
+        std::cout << "PASS: FLAC and MP3 export/import, VBR/CBR, mono/stereo, resampling, short gapless selections, limits, cancellation, corruption, budget accounting.\n";
         return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

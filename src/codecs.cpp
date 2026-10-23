@@ -3,6 +3,7 @@
 #include "web_limits.hpp"
 #include <FLAC/stream_decoder.h>
 #include <FLAC/stream_encoder.h>
+#include <lame.h>
 #define DR_MP3_NO_STDIO
 #include "dr_mp3.h"
 #include <algorithm>
@@ -178,5 +179,76 @@ void writeFlac(const Timeline& t, std::ostream& output, unsigned bits, std::atom
         if (progress) progress->store(float(double(at + n) / double(std::max<Frame>(1, t.frames))));
     }
     check(FLAC__stream_encoder_finish(e));
+}
+unsigned mp3SampleRate(unsigned sourceRate, unsigned bitrate) {
+    // MPEG-1 is required for 192/320 kbps. Otherwise preserve every MP3 rate.
+    constexpr unsigned rates[] = {8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000};
+    if (sourceRate > 48000) return sourceRate % 44100 == 0 ? 44100 : 48000;
+    unsigned best = 48000;
+    auto distance = [=](unsigned rate) { return rate > sourceRate ? rate - sourceRate : sourceRate - rate; };
+    for (unsigned rate : rates) if ((!bitrate || rate >= 32000) && distance(rate) < distance(best)) best = rate;
+    return best;
+}
+void writeMp3(const Timeline& t, std::ostream& output, unsigned bitrate,
+    std::atomic<float>* progress, std::stop_token stop, std::uint64_t byteLimit) {
+    cancelled(stop);
+    if (t.frames <= 0) throw std::runtime_error("Select some audio before exporting MP3. Empty MP3 files are not supported.");
+    if (t.channels < 1 || t.channels > 2 || t.sampleRate < 8000 || t.sampleRate > 768000 || (bitrate && bitrate != 192 && bitrate != 320))
+        throw std::runtime_error("MP3 export needs mono or stereo audio at 8 kHz or higher. Use WAV or FLAC for this format.");
+    if (std::uint64_t(t.frames) >= UINT32_MAX)
+        throw std::runtime_error("This timeline is too long for MP3 gapless metadata. Export a shorter selection.");
+#ifdef __EMSCRIPTEN__
+    byteLimit = std::min(byteLimit, web::exportLimit);
+#endif
+    // Reject obviously oversized CBR jobs before spending time encoding them.
+    // The write check below also accounts for partial seconds and tag/padding bytes.
+    if (bitrate && std::uint64_t(t.frames) / t.sampleRate > byteLimit / (bitrate * 125))
+        throw std::runtime_error("MP3 export exceeds the web editor's 128 MiB limit. Export a selection or use ColdEdit for Windows.");
+    const auto outRate = mp3SampleRate(t.sampleRate, bitrate);
+    std::unique_ptr<lame_global_flags, decltype(&lame_close)> encoder(lame_init(), lame_close);
+    if (!encoder) throw std::bad_alloc();
+    auto* e = encoder.get();
+    lame_set_num_channels(e, int(t.channels));
+    lame_set_in_samplerate(e, int(t.sampleRate)); lame_set_out_samplerate(e, int(outRate));
+    lame_set_num_samples(e, static_cast<unsigned long>(t.frames));
+    lame_set_quality(e, 2);
+    lame_set_write_id3tag_automatic(e, 0); // The gapless tag can then be written at byte zero.
+    lame_set_bWriteVbrTag(e, 1);
+    if (bitrate) { lame_set_VBR(e, vbr_off); lame_set_brate(e, int(bitrate)); }
+    else { lame_set_VBR(e, vbr_default); lame_set_VBR_quality(e, 2); }
+    if (lame_init_params(e) < 0 || unsigned(lame_get_out_samplerate(e)) != outRate || (bitrate && unsigned(lame_get_brate(e)) != bitrate))
+        throw std::runtime_error("Cannot initialize MP3 export for this format.");
+    // 4096 input frames, including the worst supported upsampling ratio (8 -> 32 kHz).
+    // No full-document PCM or encoded buffer; the existing export worker streams to disk/MEMFS.
+    std::array<float, 4096 * 2> pcm;
+    std::array<unsigned char, 32768> encoded;
+    std::uint64_t bytes = 0;
+    auto write = [&](int n) {
+        cancelled(stop);
+        if (n < 0) throw std::runtime_error("LAME could not encode this audio (error " + std::to_string(n) + ").");
+        if (std::uint64_t(n) > byteLimit - bytes)
+            throw std::runtime_error("MP3 export exceeds the web editor's 128 MiB limit. Export a selection or use ColdEdit for Windows.");
+        output.write(reinterpret_cast<const char*>(encoded.data()), n); bytes += unsigned(n);
+        if (!output) throw std::runtime_error("Cannot write MP3 audio. Check available disk space.");
+    };
+    for (Frame at = 0; at < t.frames; at += 4096) {
+        cancelled(stop);
+        const int n = int(std::min<Frame>(4096, t.frames - at));
+        for (int i = 0; i < n; ++i) for (unsigned c = 0; c < t.channels; ++c) {
+            float value = t.sample(at + i, c);
+            pcm[std::size_t(i) * t.channels + c] = std::isfinite(value) ? std::clamp(value, -1.f, 1.f) : 0;
+        }
+        write(t.channels == 2 ? lame_encode_buffer_interleaved_ieee_float(e, pcm.data(), n, encoded.data(), int(encoded.size()))
+            : lame_encode_buffer_ieee_float(e, pcm.data(), pcm.data(), n, encoded.data(), int(encoded.size())));
+        if (progress) progress->store(float(double(at + n) / double(t.frames)));
+    }
+    write(lame_encode_flush(e, encoded.data(), int(encoded.size())));
+    const auto tagBytes = lame_get_lametag_frame(e, encoded.data(), encoded.size());
+    if (!tagBytes || tagBytes > encoded.size() || tagBytes > bytes)
+        throw std::runtime_error("Cannot finalize MP3 duration metadata.");
+    cancelled(stop);
+    output.seekp(0); output.write(reinterpret_cast<const char*>(encoded.data()), std::streamsize(tagBytes));
+    output.seekp(std::streamoff(bytes));
+    if (!output) throw std::runtime_error("Cannot finalize the MP3 file.");
 }
 }

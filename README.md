@@ -1,22 +1,30 @@
 # ColdEdit
 
 A small native wave editor built around a smooth timeline. C++20, Dear ImGui,
-GLFW, OpenGL 3.3, and miniaudio. Windows x64 is built and verified; the source
-also includes POSIX file mapping and a path-entry fallback for non-Windows
-platforms, but those platforms have not been tested.
+GLFW, OpenGL 3.3, and miniaudio. Available for Windows x64, Linux x64, and the web.
+
+**[Open the web editor](https://sqrctl.de/ce/)** ·
+**[Download releases](https://github.com/reddor/coldedit/releases)** ·
+[Build status](https://github.com/reddor/coldedit/actions/workflows/build.yml)
 
 ## Run
 
 Open `dist/ColdEdit/coldedit.exe` after packaging, or `build/coldedit.exe` after
-building. There is no installer. The Windows release statically links its C/C++
+building. Download `ColdEdit-win64.zip` from GitHub Releases and extract it to
+run the packaged Windows app. There is no installer. The Windows release statically links its C/C++
 runtime and its libraries; no separate runtime DLLs are needed.
+
+On Linux, extract `ColdEdit-linux-x64.tar.gz` and run `./ColdEdit-linux/coldedit`.
+The GitHub build targets Ubuntu 22.04 or newer on x86-64, with OpenGL 3.3 and
+X11 (or XWayland). It uses the system's C/C++, graphics and audio runtime
+libraries. Open/export uses a path-entry dialog; drag-and-drop also works.
 
 Drop a WAV, FLAC or MP3 onto the window, or click **ColdEdit > Open audio**.
 The editor starts empty until you open your audio.
 
 A WebAssembly build is also available in `dist/Web` and `dist/ColdEdit-web.zip`.
 It runs locally in a desktop browser, with a **64 MiB input limit** and a
-**128 MiB shared audio memory budget** and **128 MiB export limit**, and links to the included native Windows download for
+**128 MiB shared audio memory budget** and **128 MiB export limit**, and links to GitHub Releases for native downloads for
 larger recordings. See [WEB.md](WEB.md) for running, building, hosting, and
 browser-specific memory behavior.
 
@@ -30,7 +38,8 @@ browser-specific memory behavior.
   extensible headers with matching valid and container bit depths.
 - Mono/stereo FLAC import and 16/24-bit FLAC export using libFLAC 1.5.0, plus
   MP3 import using dr_mp3. Original sample rates are preserved; MP3 gapless
-  delay/padding metadata is honored when present. MP3 export is not included.
+  delay/padding metadata is honored when present. LAME 3.100 exports MP3 using
+  high-quality VBR (V2), 192 kbps CBR, or 320 kbps CBR, including gapless metadata.
   Compressed imports run on a cancellable worker. Native decoding streams to a
   temporary mapped float WAV (up to 4 GiB), and the browser enforces its shared
   audio budget against both declared duration and actual decoded output.
@@ -56,7 +65,7 @@ browser-specific memory behavior.
   channels. Fades remain intact through copy, trim, reverse, and undo/redo.
 - Insert silence at the cursor using seconds or an exact sample count. Audio
   after the cursor moves right; the inserted interval becomes the selection.
-- Save selection as WAV or FLAC directly, without trimming the document or changing history.
+- Save selection as WAV, FLAC or MP3 directly, without trimming the document or changing history.
 - Optional zero-crossing snapping (5 ms search) and 1–10 ms Smooth edge fades.
   Automatic fades cover cut/delete/insertion or replacement paste/trim/insert
   silence in one undo step. Additive paste keeps the original signal intact.
@@ -72,8 +81,8 @@ browser-specific memory behavior.
   Export live in the menu. Playhead, duration, monitor gain, and output meters
   stay visible at the top of the right sidebar while the inspector scrolls.
 - Cancellable background export to 16-bit PCM, 24-bit PCM, or 32-bit float WAV,
-  and 16/24-bit FLAC (compression level 5),
-  at the original sample rate. Export always writes a **new** file. Existing
+  16/24-bit FLAC (compression level 5), and MP3.
+  WAV/FLAC preserve the original sample rate. Export always writes a **new** file. Existing
   destinations are rejected. Unsaved edits prompt before close/open; exporting
   from that prompt completes the pending close/open after success.
 
@@ -84,7 +93,13 @@ Choose the format in **ColdEdit > Export format** or the inspector's format
 selector, then **Export audio** or **Save selection**. FLAC stores integer PCM:
 samples are rounded to the selected bit depth and clipped at full scale, just
 like integer WAV export. Float WAV preserves headroom. Metadata tags/artwork
-are not copied to exported files; sample rate conversion is not included.
+are not copied to exported files. MP3 is lossy; it clips input to full scale and
+preserves supported sample rates. Other rates are resampled by LAME to a supported
+rate shown in the inspector (for example 96 -> 48 kHz, 88.2 -> 44.1 kHz).
+192/320 kbps require MPEG-1, so sources below 32 kHz are upsampled to 32 kHz for
+those presets. VBR preserves all standard MP3 rates from 8 to 48 kHz. Inputs below
+8 kHz and empty audio cannot be exported as MP3. The general sample-rate conversion
+workflow is still not included.
 
 Edits pause playback. Monitor gain does not affect export. Export audio includes
 the whole edited timeline; Save selection includes only the selected range,
@@ -125,7 +140,7 @@ above full scale can clip in playback or integer WAV export. Normalize if needed
 | Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y | Undo / redo |
 | Escape | Clear selection |
 | Ctrl+O / Ctrl+E / Ctrl+S | Open / export / export |
-| Ctrl+Shift+E | Save selected audio in the chosen WAV/FLAC format |
+| Ctrl+Shift+E | Save selected audio in the chosen WAV/FLAC/MP3 format |
 | F1 | Shortcut reference |
 | F10 | Open main menu; arrows and Enter navigate, Escape dismisses |
 
@@ -147,8 +162,46 @@ shell is optional.
 ```
 
 The first configure fetches pinned, SHA-256-verified source archives. If present,
-`third_party/{imgui,glfw,miniaudio,flac,dr_libs}.tar.gz` are used as offline caches. This
-workspace already includes these caches. They are ignored by Git.
+`third_party/{imgui,glfw,miniaudio,flac,dr_libs,lame}.tar.gz` are used as offline caches. This
+workspace may include these caches. They are ignored by Git; GitHub Actions
+downloads the same verified archives on clean runners.
+
+On Ubuntu/Debian (including WSL Ubuntu), install the build dependencies and run:
+
+```sh
+sudo apt-get install build-essential cmake ninja-build libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev xvfb xauth
+bash build-linux.sh --test --smoke --package
+```
+
+This uses a separate `build-linux` directory, so WSL and Windows builds can
+share a checkout. The Linux smoke test runs under Xvfb with software OpenGL.
+Launching the normal UI in WSL requires WSLg or another graphical display.
+The locally built binary requires the runtime versions of that build system;
+use the GitHub release for the Ubuntu 22.04 compatibility baseline.
+
+### GitHub builds and releases
+
+[GitHub Actions](https://github.com/reddor/coldedit/actions/workflows/build.yml)
+builds and tests Windows, Linux and WebAssembly on pushes to `main`, pull
+requests, and manual runs. Successful jobs retain downloadable package artifacts.
+Linux also runs a real OpenGL smoke test and verifies the packaged relink kit;
+the web job runs the Playwright browser suites. Windows UI smoke tests remain
+available locally with `-Smoke` because hosted runners do not provide the
+required desktop OpenGL session.
+
+To publish a release, update the version in `CMakeLists.txt`, commit and push,
+then push a matching version tag (for example `v0.1.0`):
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Only after all three builds and their tests pass, the workflow creates a
+GitHub Release with `ColdEdit-win64.zip`, `ColdEdit-linux-x64.tar.gz`,
+`ColdEdit-web.zip`, and `SHA256SUMS.txt`. No extra repository secrets are needed.
+The web ZIP can be deployed to [sqrctl.de/ce](https://sqrctl.de/ce/); the workflow
+does not automatically deploy to that server.
 
 From an initialized C++ toolchain shell:
 
@@ -239,15 +292,15 @@ active and waits for OS events while idle.
 
 ## Deliberate limits
 
-This is a single-document waveform editor. It does not yet include MP3 encoding,
+This is a single-document waveform editor. It does not yet include
 recording, multitrack mixing, effects plugins, spectrum tools,
 project persistence, or RF64. RIFF exports are limited to 4 GiB. History is
 session-only; export before quitting to keep edits. WAV metadata chunks are
 not copied to exports.
 
 Monitoring uses linear interpolation into a 48 kHz stereo stream; it is not a
-mastering-quality sample-rate converter. Export preserves original-rate samples
-and does not use the monitoring resampler. Integer export rounds and clips,
+mastering-quality sample-rate converter. Export does not use the monitoring
+resampler; MP3 uses LAME's resampler only when required. Integer export rounds and clips,
 without dither; float export preserves finite headroom. Peak normalization
 measures sample peaks, not inter-sample true peaks. Automated playback checks
 verify sample delivery; subjective audio quality has not been listening-tested.
@@ -255,7 +308,7 @@ verify sample delivery; subjective audio quality has not been listening-tested.
 ## Source map and dependencies
 
 - `src/audio_file.*`: mapping, RIFF validation, sample access, peak pyramid.
-- `src/codecs.*`, `src/dr_mp3.c`: streaming FLAC/MP3 decoding and FLAC encoding.
+- `src/codecs.*`, `src/dr_mp3.c`: streaming FLAC/MP3 decoding and encoding.
 - `src/document.*`: piece table, editing/history, normalization scan, export.
 - `src/processing.*`: cleanup analysis and streaming filter processing.
 - `src/playback.*`: streaming worker, SPSC ring, miniaudio callback.
@@ -271,10 +324,16 @@ verify sample delivery; subjective audio quality has not been listening-tested.
 Pinned dependencies: [Dear ImGui 1.91.9b](https://github.com/ocornut/imgui/tree/v1.91.9b),
 [GLFW 3.4](https://github.com/glfw/glfw/tree/3.4),
 [miniaudio 0.11.23](https://github.com/mackron/miniaudio/tree/0.11.23),
-[libFLAC 1.5.0](https://github.com/xiph/flac/tree/1.5.0) (BSD-style), and
+[libFLAC 1.5.0](https://github.com/xiph/flac/tree/1.5.0) (BSD-style),
 [dr_mp3 0.7.4](https://github.com/mackron/dr_libs/tree/8159355353a9baeea04416df9626ac2b9afbf97b)
-(public domain or MIT No Attribution).
+(public domain or MIT No Attribution), and [LAME 3.100](https://lame.sourceforge.io/)
+(LGPL v2 or later; encoder only).
 Integration follows the [ImGui GLFW/OpenGL example](https://github.com/ocornut/imgui/tree/v1.91.9b/examples/example_glfw_opengl3)
 and [miniaudio device callback documentation](https://miniaud.io/docs/manual/index.html).
 Their license texts are included in packaged builds. System fonts are loaded
 from the local Windows installation and are not redistributed.
+
+LAME is linked directly into all builds. Each release includes `relink/` with
+its source, application objects, and build instructions for replacing the library
+under the LGPL. Keep that directory with distributed copies. These files add
+archive size but are not loaded by the application or fetched at web startup.

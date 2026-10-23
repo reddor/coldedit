@@ -28,9 +28,10 @@ std::filesystem::path fileDialog(GLFWwindow* window, bool save, const std::files
     if (!suggested.empty()) wcsncpy_s(name, suggested.c_str(), _TRUNCATE);
     OPENFILENAMEW ofn{}; ofn.lStructSize = sizeof(ofn); ofn.hwndOwner = glfwGetWin32Window(window);
     const bool flac = save && suggested.extension() == ".flac";
-    ofn.lpstrFilter = save ? (flac ? L"FLAC audio (*.flac)\0*.flac\0" : L"Wave audio (*.wav)\0*.wav\0") : L"Audio (*.wav;*.flac;*.mp3)\0*.wav;*.flac;*.mp3\0All files\0*.*\0";
+    const bool mp3 = save && suggested.extension() == ".mp3";
+    ofn.lpstrFilter = save ? (mp3 ? L"MP3 audio (*.mp3)\0*.mp3\0" : flac ? L"FLAC audio (*.flac)\0*.flac\0" : L"Wave audio (*.wav)\0*.wav\0") : L"Audio (*.wav;*.flac;*.mp3)\0*.wav;*.flac;*.mp3\0All files\0*.*\0";
     ofn.lpstrFile = name; ofn.nMaxFile = 32768;
-    ofn.lpstrDefExt = flac ? L"flac" : L"wav"; ofn.Flags = OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST | (save ? 0 : OFN_FILEMUSTEXIST);
+    ofn.lpstrDefExt = mp3 ? L"mp3" : flac ? L"flac" : L"wav"; ofn.Flags = OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST | (save ? 0 : OFN_FILEMUSTEXIST);
     ofn.lpstrTitle = save ? L"Export audio to a new file" : L"Open WAV, FLAC or MP3 audio";
     if (save ? GetSaveFileNameW(&ofn) : GetOpenFileNameW(&ofn)) return name;
 #else

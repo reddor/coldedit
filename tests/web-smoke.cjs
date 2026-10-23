@@ -55,7 +55,8 @@ async function load(page, name='browser-test.wav', data=original) {
       if (!(state.selection_end>state.selection_start)) await page.screenshot({path:`artifacts/web-selection-failure-${scale}.png`});
       assert(state.selection_end>state.selection_start,JSON.stringify(state));
       const fixedEnd = state.selection_end;
-      await drag(page,300,350,350,350);
+      // Start at a different height so rapid test drags are not a double-click.
+      await drag(page,300,390,350,390);
       state = await diag(page); assert.equal(state.selection_end,fixedEnd); assert(state.selection_start>0);
       const fixedStart = state.selection_start;
       await drag(page,650,350,700,350);

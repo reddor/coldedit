@@ -14,7 +14,7 @@ async function submenu(p,root,row,child){
   if(child!==undefined){await key(p,'ArrowRight');await key(p,'Home');for(let i=0;i<child;i++)await key(p,'ArrowDown');}
   await key(p,'Enter');
 }
-async function processMenu(p,row){await key(p,'Control+a');await submenu(p,6,row);assert.equal((await diag(p)).popup_open,true);}
+async function processMenu(p,row){await key(p,'Control+a');await submenu(p,5,row);assert.equal((await diag(p)).popup_open,true);}
 async function exportAudio(p,path){const download=p.waitForEvent('download');await key(p,'Control+e');await(await download).saveAs(path);await p.waitForFunction(()=>!coldeditWeb.diagnostics().busy);await p.locator('#dismiss').click();await tick(p);return fs.readFileSync(path);}
 function read(b,f,c){const channels=b.readUInt16LE(22);return b.readIntLE(44+(f*channels+c)*3,3)/8388608;}
 async function applied(p){await p.waitForFunction(()=>!coldeditWeb.diagnostics().busy&&!coldeditWeb.diagnostics().popup_open);}
@@ -52,7 +52,7 @@ async function applied(p){await p.waitForFunction(()=>!coldeditWeb.diagnostics()
       let maxDeviation=0;for(let f=24000;f<frames;f++)maxDeviation=Math.max(maxDeviation,Math.abs(read(lp,f,0)-.2));assert(maxDeviation<.06);await key(p,'Control+z');
       // Every channel tool is exercised through the menus and checked in the exported WAV.
       for(let operation=0;operation<7;operation++){
-        await key(p,'Control+a');await submenu(p,6,8,operation);
+        await key(p,'Control+a');await submenu(p,5,8,operation);
         const channels=operation<3?1:2;assert.equal((await diag(p)).channels,channels);
         const b=await exportAudio(p,`artifacts/web-channel-${operation}-${scale}.wav`);assert.equal(b.readUInt16LE(22),channels);
         for(let f=0;f<frames;f+=19)for(let c=0;c<channels;c++){
@@ -68,13 +68,13 @@ async function applied(p){await p.waitForFunction(()=>!coldeditWeb.diagnostics()
         const f=snapped[field];assert(Math.abs(f-raw[field])<=240);
         assert([0,1].some(c=>Math.sign(sample(f-1,c))!==Math.sign(sample(f,c))||sample(f,c)===0));
       }
-      await key(p,'Control+a');await submenu(p,5,5);assert.equal((await diag(p)).auto_edge_fades,true);
+      await key(p,'Control+a');await submenu(p,4,5);assert.equal((await diag(p)).auto_edge_fades,true);
       await key(p,'Escape');await drag(p,300,650);const selected=await diag(p),start=selected.selection_start,length=selected.selection_end-start;
       await key(p,'Delete');assert.equal((await diag(p)).frames,frames-length);
       const edged=await exportAudio(p,`artifacts/web-edit-edges-${scale}.wav`);
       assert.equal(read(edged,start-1,0),0);assert.equal(read(edged,start,1),0);await key(p,'Control+z');assert.equal((await diag(p)).frames,frames);
       // Reject a filter larger than the processing budget without losing edits or allocating PCM.
-      await key(p,'Control+a');await submenu(p,5,5);await key(p,'Home');await key(p,'Insert');
+      await key(p,'Control+a');await submenu(p,4,5);await key(p,'Home');await key(p,'Insert');
       await click(p,cx-100,cy+27);await key(p,'Control+a');await p.keyboard.type('20000000',{delay:35});await key(p,'Enter');
       const budgetBefore=await diag(p);await processMenu(p,6);await click(p,cx-155,cy+112);
       await p.waitForFunction(()=>coldeditWeb.diagnostics().error.includes('128 MiB budget'));

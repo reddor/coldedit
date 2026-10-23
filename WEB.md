@@ -1,11 +1,18 @@
 # ColdEdit for the web
 
+**[Open the hosted editor](https://sqrctl.de/ce/)** ·
+[Download releases](https://github.com/reddor/coldedit/releases)
+
 The browser target shares the C++ editor, waveform renderer, effects, history,
 and playback ring with the native application. It uses Emscripten 4.0.23,
 WebGL 2, the contrib GLFW 3.4 port, and miniaudio's AudioWorklet backend.
 
-WAV/FLAC/MP3 import and WAV/FLAC export share the native codecs and preserve the
-original sample rate. FLAC export supports 16/24-bit PCM at compression level 5.
+WAV/FLAC/MP3 import and export share the native codecs. FLAC export supports
+16/24-bit PCM at compression level 5. MP3 export uses LAME 3.100, linked directly
+into the main WASM module: no separate encoder download or on-demand loader.
+Presets are VBR high (V2), 192 kbps CBR, and 320 kbps CBR. Gapless metadata preserves
+duration in compatible players. MP3 preserves supported rates and resamples other
+rates as shown in the inspector; see README.md for the rate policy.
 Choose **ColdEdit > Export format**, then export the file or selection.
 
 Selection dragging, retained ranges after Cut/Delete, Save selection, and
@@ -30,8 +37,8 @@ node web/serve.mjs dist/Web
 
 The server binds only to this computer. Opening `index.html` directly through
 `file://` will not work. No audio is uploaded; file reads, edits, playback, and
-export happen locally in the browser. The package includes the Windows ZIP
-linked above the editor, so the larger-file recommendation is a usable download.
+export happen locally in the browser. The native-download links open GitHub
+Releases, where Windows and Linux packages are published.
 
 ## Limits and behavior
 
@@ -39,10 +46,11 @@ linked above the editor, so the larger-file recommendation is a usable download.
   again before allocating audio storage in C++.
 - Maximum export: **128 MiB** including headers. WAV uses a conservative 56-byte
   header allowance, checked before starting a job and inside the exporter.
-  FLAC checks actual encoded bytes before each write, so highly compressed
+  FLAC and MP3 check actual encoded bytes before each write, so highly compressed
   material can export even when its uncompressed WAV would be too large.
+  MP3 encodes in small blocks on the existing export worker and remains cancellable.
   Pasting can grow the timeline without duplicating source audio; exports that
-  exceed the limit explain how to export a selection, lower the bit depth, or use Windows.
+  exceed the limit explain how to export a selection, lower the bit depth, or use the native app.
 - Fade in/out (Linear or Smooth), selection export, and exact-duration silence
   insertion use the same code as the native build. Fades and silence add only
   timeline metadata. The export limit applies to the selected range when using
@@ -104,7 +112,6 @@ Install and activate the pinned SDK in `third_party/emsdk` (or supply `-Sdk`):
 git clone https://github.com/emscripten-core/emsdk.git third_party/emsdk
 .\third_party\emsdk\emsdk install 4.0.23
 .\third_party\emsdk\emsdk activate 4.0.23
-.\build.ps1 -Test -Package
 .\build-web.ps1 -Package
 ```
 
@@ -117,10 +124,11 @@ From an Emscripten environment on other platforms:
 ```text
 emcmake cmake -S . -B build-web -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
 cmake --build build-web --parallel
+cmake --install build-web --prefix dist/Web
 ```
 
 Serve `build-web/site` while developing. If distributing a manually assembled
-build, include `native/ColdEdit-win64.zip`, the licenses, and all generated
+build, include the licenses, `relink/`, and all generated
 `.js`, `.wasm`, and `.data` files. Do not ship just the HTML file.
 
 ## Hosting
@@ -152,9 +160,11 @@ node tests/web-cleanup.cjs
 node tests/web-selection.cjs
 ```
 
-Install the `playwright` package in your development environment first. Set
+Install the pinned test dependency with `npm ci --prefix tests` first. Set
 `COLDEDIT_WEB_URL` to another local server URL or `COLDEDIT_BROWSER=chrome` to
-use an installed Chrome channel. Tests require a running server. Native core
+use an installed Chrome channel. CI uses `COLDEDIT_BROWSER=chromium` and installs
+that browser with `cd tests && npx playwright install --with-deps chromium`.
+Tests require a running server. Native core
 tests also check exact size boundaries and overflow-safe export limits.
 
 For codec and decoded-memory verification, generate the small compressed fixtures
@@ -163,11 +173,15 @@ once in a new output directory, then run the isolated server/browser harness:
 ```text
 build/coldedit_codec_tests.exe --web-fixtures artifacts/codec-fixtures
 node tests/run-web-tests.cjs web-codecs.cjs
+node tests/run-web-tests.cjs web-mp3.cjs
 ```
 
 This covers MP3 gapless import, edited-selection FLAC round trips at both bit
 depths, corrupt-file recovery, cancellation, exact/aggregate budget boundaries,
 and an over-limit FLAC stream with no reported sample count.
+The MP3 suite checks all export presets, selection and full-file downloads,
+gapless reimport, decoded signal, 96 -> 48 kHz mono resampling, cancellation,
+and the web output limit.
 
 Browser verification covers 100%, 110%, 125%, 150%, 175%, and 200% DPI, file input, selection
 edges and crossing, zoom, pan, AudioWorklet playback, undo/redo, and downloaded
@@ -186,5 +200,5 @@ across reloads. They also capture the empty editor and compact status bar.
 The lifecycle suite also tests the real file picker, drag-and-drop, cancelled
 unsaved-change prompts, corrupt inputs, three consecutive exact-64-MiB opens,
 playback after memory growth, 100% → 150% → 200% → 100% DPI transitions,
-the native download, and the explanatory screen when isolation headers are
+the GitHub Releases link, and the explanatory screen when isolation headers are
 missing. Raw reports and screenshots are saved in `artifacts/`.
