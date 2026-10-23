@@ -142,7 +142,9 @@ jobs:
           name: packages-web
           path: dist
       - name: Extract the web package under test
-        run: unzip -q dist/ColdEdit-web.zip -d build-web/site
+        run: |
+          mkdir -p build-web/site
+          unzip -q dist/ColdEdit-web.zip -d build-web/site
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: matrix.suite == 'codecs'
         with:
