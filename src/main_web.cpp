@@ -11,6 +11,7 @@
 
 // Implemented by the narrowly adapted upstream GLFW backend (cmake/WebImGui.cmake).
 void ColdEditWebInputScale(float x, float y);
+void ColdEditWebApplyClickCounts();
 namespace {
 GLFWwindow* window = nullptr;
 std::unique_ptr<coldedit::Editor> editor;
@@ -44,6 +45,7 @@ void frame() {
         ImGui::GetIO().DisplaySize = {float(fw), float(fh)};
         ImGui::GetIO().DisplayFramebufferScale = {1, 1};
         ImGui::NewFrame();
+        ColdEditWebApplyClickCounts();
         editor->render(); ImGui::Render();
         glViewport(0, 0, fw, fh); glClearColor(.06f, .08f, .10f, 1); glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

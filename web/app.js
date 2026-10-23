@@ -109,6 +109,12 @@ var Module = {
   setStatus: message => { if (!started && message) loadingText.textContent = message; }
 };
 input.addEventListener('change', () => window.coldeditWeb.openFile(input.files[0]));
+// Capture the browser's click count before GLFW handles this same event. Clear
+// it after dispatch so synthesized touch input cannot reuse an old mouse count.
+canvas.addEventListener('mousedown', event => {
+  window.coldeditWeb.mouseClickCount = event.detail;
+  setTimeout(() => { window.coldeditWeb.mouseClickCount = 0; }, 0);
+}, true);
 document.getElementById('dismiss').addEventListener('click', () => { notice.hidden = true; canvas.focus(); });
 canvas.addEventListener('contextmenu', event => event.preventDefault());
 canvas.addEventListener('dragover', event => { event.preventDefault(); canvas.classList.add('dragging'); });

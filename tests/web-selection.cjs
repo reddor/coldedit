@@ -9,6 +9,26 @@ function sample(f,c){return f<0||f>=frames?0:Math.fround((c?-.1:.2)+.15*Math.sin
 function fixture(){const b=Buffer.alloc(44+frames*8);b.write('RIFF');b.writeUInt32LE(b.length-8,4);b.write('WAVEfmt ',8);b.writeUInt32LE(16,16);b.writeUInt16LE(3,20);b.writeUInt16LE(2,22);b.writeUInt32LE(48000,24);b.writeUInt32LE(384000,28);b.writeUInt16LE(8,32);b.writeUInt16LE(32,34);b.write('data',36);b.writeUInt32LE(frames*8,40);for(let f=0;f<frames;f++)for(let c=0;c<2;c++)b.writeFloatLE(sample(f,c),44+f*8+c*4);return b;}
 const range=d=>[d.selection_start,d.selection_end];
 const length=d=>d.selection_end-d.selection_start;
+async function slowDoubleClicks(browser){
+ const context=await browser.newContext({viewport:{width,height}}),p=await context.newPage();
+ try{
+  // Two queued presses now take longer than ImGui's 300 ms double-click
+  // threshold to render. Browser event timing must still select and clear.
+  await p.addInitScript(()=>{
+   const raf=window.requestAnimationFrame.bind(window);
+   window.requestAnimationFrame=callback=>raf(()=>setTimeout(()=>callback(performance.now()),180));
+  });
+  await p.goto(process.env.COLDEDIT_WEB_URL||'http://localhost:8080/');await p.waitForFunction(()=>document.querySelector('#loading').hidden);
+  await p.locator('#file-input').setInputFiles({name:'slow-selection.wav',mimeType:'audio/wav',buffer:fixture()});
+  await p.waitForFunction(()=>coldeditWeb.diagnostics().frames===48000);
+  for(const [x,expected] of [[500,frames],[600,0]]){
+   await p.mouse.move(x,350);await tick(p);await p.mouse.dblclick(x,350);await tick(p);
+   assert.equal(length(await diag(p)),expected,'double-click uses event timing at low frame rates');
+  }
+  assert.equal((await diag(p)).history_states,1);assert.equal((await diag(p)).dirty,false);
+  console.log('PASS selection with deliberately slow rendering: double-click selects and clears');
+ }catch(e){await captureFailure(p,'web-selection-slow-failure',e);throw e;}finally{await context.close();}
+}
 function xAt(d,f){return 70+(f-d.view_start)/d.view_span*1100;}
 async function exportAudio(p,path,expected,total,trigger){const before=await diag(p),event=p.waitForEvent('download');if(trigger)await trigger();else await key(p,'Control+e');const download=await event;await download.saveAs(path);await p.waitForFunction(()=>!coldeditWeb.diagnostics().busy);await p.locator('#dismiss').click();await tick(p);const b=fs.readFileSync(path);assert.equal(b.readUInt32LE(40)/6,total);for(let f=0;f<total;f++)for(let c=0;c<2;c++)assert(Math.abs(b.readIntLE(44+(f*2+c)*3,3)/8388608-expected(f,c))<2e-6,`sample ${f}/${c}`);if(trigger){assert.equal(download.suggestedFilename(),'selection-selection.wav');const after=await diag(p);for(const field of ['frames','history_states','dirty','selection_start','selection_end'])assert.equal(after[field],before[field],field);}}
 (async()=>{
@@ -63,5 +83,5 @@ async function exportAudio(p,path,expected,total,trigger){const before=await dia
    await exportAudio(p,`artifacts/web-save-selection-context-${scale}.wav`,(f,c)=>sample(saved.selection_start+f,c),length(saved),async()=>{await p.mouse.click(500,350,{button:'right',delay:40});await tick(p);await p.screenshot({path:`artifacts/web-selection-${scale}.png`});await key(p,'Home');for(let i=0;i<4;i++)await key(p,'ArrowDown');await key(p,'Enter');});
    assert.deepEqual(errors,[]);assert.equal((await diag(p)).error,'');reports.push({scale,passed:true,diagnostics:await diag(p)});console.log(`PASS selection ${scale}x: double-click toggle, range drag, Alt-drag, Save selection WAV via menu/inspector/context, retained cut, mix samples/history, replacement, EOF and cut-all recovery`);
   }catch(e){await captureFailure(p,`web-selection-failure-${scale}`,e);throw e;}finally{await context.close();}
- }}finally{await browser.close();fs.writeFileSync('artifacts/web-selection.json',JSON.stringify(reports,null,2));}
+ }await slowDoubleClicks(browser);}finally{await browser.close();fs.writeFileSync('artifacts/web-selection.json',JSON.stringify(reports,null,2));}
 })().catch(e=>{console.error(e);process.exitCode=1;});
