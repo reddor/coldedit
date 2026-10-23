@@ -13,6 +13,7 @@
 #include <unordered_set>
 #ifdef __EMSCRIPTEN__
 #include "web_limits.hpp"
+#include "imgui_internal.h"
 #endif
 
 namespace coldedit {
@@ -1412,6 +1413,8 @@ std::string Editor::diagnostics() const {
         << ",\n  \"processed_bytes\": " << AudioFile::processedBytes()
         << ",\n  \"audio_bytes\": " << AudioFile::audioBytes()
 #ifdef __EMSCRIPTEN__
+        << ",\n  \"frame_count\": " << ImGui::GetFrameCount()
+        << ",\n  \"pending_input_events\": " << ImGui::GetCurrentContext()->InputEventsQueue.Size
         << ",\n  \"audio_limit\": " << web::audioLimit.load()
         << ",\n  \"memory_recovery\": " << (memoryRetry_ ? "true" : "false")
         << ",\n  \"memory_needed\": " << memoryNeeded_

@@ -2,7 +2,7 @@ const {chromium}=require('playwright');
 const assert=require('node:assert/strict'),fs=require('node:fs');
 const frames=48000,width=1440,height=944;
 const diag=p=>p.evaluate(()=>coldeditWeb.diagnostics());
-const tick=p=>p.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
+const {settle:tick,captureFailure}=require('./web-test-helpers.cjs');
 async function key(p,k){await p.keyboard.press(k);await tick(p);}
 async function drag(p,a,b,alt=false){if(alt)await p.keyboard.down('Alt');await p.mouse.move(a,350);await tick(p);await p.mouse.down();await tick(p);await p.mouse.move(b,350,{steps:12});await tick(p);await p.mouse.up();if(alt)await p.keyboard.up('Alt');await tick(p);}
 function sample(f,c){return f<0||f>=frames?0:Math.fround((c?-.1:.2)+.15*Math.sin(f*2*Math.PI/(c?71:48)));}
@@ -12,7 +12,7 @@ const length=d=>d.selection_end-d.selection_start;
 function xAt(d,f){return 70+(f-d.view_start)/d.view_span*1100;}
 async function exportAudio(p,path,expected,total,trigger){const before=await diag(p),event=p.waitForEvent('download');if(trigger)await trigger();else await key(p,'Control+e');const download=await event;await download.saveAs(path);await p.waitForFunction(()=>!coldeditWeb.diagnostics().busy);await p.locator('#dismiss').click();await tick(p);const b=fs.readFileSync(path);assert.equal(b.readUInt32LE(40)/6,total);for(let f=0;f<total;f++)for(let c=0;c<2;c++)assert(Math.abs(b.readIntLE(44+(f*2+c)*3,3)/8388608-expected(f,c))<2e-6,`sample ${f}/${c}`);if(trigger){assert.equal(download.suggestedFilename(),'selection-selection.wav');const after=await diag(p);for(const field of ['frames','history_states','dirty','selection_start','selection_end'])assert.equal(after[field],before[field],field);}}
 (async()=>{
- const browser=await chromium.launch({channel:'msedge',headless:true,args:['--mute-audio']});const reports=[];
+ const browser=await chromium.launch({channel:process.env.COLDEDIT_BROWSER||'msedge',headless:true,args:['--mute-audio']});const reports=[];
  try{for(const scale of (process.env.COLDEDIT_DPI||'1,1.25,2').split(',').map(Number)){
   const context=await browser.newContext({viewport:{width,height},deviceScaleFactor:scale,acceptDownloads:true}),p=await context.newPage(),errors=[];p.on('pageerror',e=>errors.push(e.message));p.setDefaultTimeout(20000);
   try{
@@ -20,7 +20,7 @@ async function exportAudio(p,path,expected,total,trigger){const before=await dia
    await p.locator('#file-input').setInputFiles({name:'selection.wav',mimeType:'audio/wav',buffer:fixture()});await p.waitForFunction(()=>coldeditWeb.diagnostics().frames===48000);
    // Double-click toggles full selection, including after Ctrl+A and at a handle
    // or on the ruler where the first click can already change the range.
-   const doubleClick=async(x,y=350)=>{await p.mouse.dblclick(x,y,{delay:50});await tick(p);};
+   const doubleClick=async(x,y=350)=>{await p.mouse.move(x,y);await tick(p);await p.mouse.dblclick(x,y);await tick(p);};
    const cleared=async()=>{const d=await diag(p);assert.equal(length(d),0,'full selection clears');assert.equal(d.position,d.selection_start,'playhead follows the clearing click');assert.equal(d.history_states,1);assert.equal(d.dirty,false);};
    await doubleClick(500);assert.deepEqual(range(await diag(p)),[0,frames]);
    await doubleClick(600);await cleared();
@@ -62,6 +62,6 @@ async function exportAudio(p,path,expected,total,trigger){const before=await dia
    const saved=await diag(p);
    await exportAudio(p,`artifacts/web-save-selection-context-${scale}.wav`,(f,c)=>sample(saved.selection_start+f,c),length(saved),async()=>{await p.mouse.click(500,350,{button:'right',delay:40});await tick(p);await p.screenshot({path:`artifacts/web-selection-${scale}.png`});await key(p,'Home');for(let i=0;i<4;i++)await key(p,'ArrowDown');await key(p,'Enter');});
    assert.deepEqual(errors,[]);assert.equal((await diag(p)).error,'');reports.push({scale,passed:true,diagnostics:await diag(p)});console.log(`PASS selection ${scale}x: double-click toggle, range drag, Alt-drag, Save selection WAV via menu/inspector/context, retained cut, mix samples/history, replacement, EOF and cut-all recovery`);
-  }catch(e){await p.screenshot({path:`artifacts/web-selection-failure-${scale}.png`});throw e;}finally{await context.close();}
+  }catch(e){await captureFailure(p,`web-selection-failure-${scale}`,e);throw e;}finally{await context.close();}
  }}finally{await browser.close();fs.writeFileSync('artifacts/web-selection.json',JSON.stringify(reports,null,2));}
 })().catch(e=>{console.error(e);process.exitCode=1;});

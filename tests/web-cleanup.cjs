@@ -2,7 +2,7 @@ const {chromium}=require('playwright');
 const assert=require('node:assert/strict'),fs=require('node:fs');
 const width=1440,height=944,cx=width/2,cy=(height+44)/2,frames=48000;
 const diag=p=>p.evaluate(()=>coldeditWeb.diagnostics());
-const tick=p=>p.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
+const {settle:tick,captureFailure}=require('./web-test-helpers.cjs');
 async function key(p,k){await p.keyboard.press(k);await tick(p);}
 async function click(p,x,y){await p.mouse.click(x,y,{delay:50});await tick(p);}
 async function drag(p,a,b){await p.mouse.move(a,350);await tick(p);await p.mouse.down();await tick(p);await p.mouse.move(b,350,{steps:12});await tick(p);await p.mouse.up();await tick(p);}
@@ -19,7 +19,7 @@ async function exportAudio(p,path){const download=p.waitForEvent('download');awa
 function read(b,f,c){const channels=b.readUInt16LE(22);return b.readIntLE(44+(f*channels+c)*3,3)/8388608;}
 async function applied(p){await p.waitForFunction(()=>!coldeditWeb.diagnostics().busy&&!coldeditWeb.diagnostics().popup_open);}
 (async()=>{
-  const browser=await chromium.launch({channel:'msedge',headless:true,args:['--mute-audio']});const reports=[];
+  const browser=await chromium.launch({channel:process.env.COLDEDIT_BROWSER||'msedge',headless:true,args:['--mute-audio']});const reports=[];
   try{for(const scale of (process.env.COLDEDIT_DPI||'1,1.25,2').split(',').map(Number)){
     const context=await browser.newContext({viewport:{width,height},deviceScaleFactor:scale,acceptDownloads:true});const p=await context.newPage(),errors=[];
     p.on('pageerror',e=>errors.push(e.message));p.setDefaultTimeout(20000);
@@ -77,10 +77,10 @@ async function applied(p){await p.waitForFunction(()=>!coldeditWeb.diagnostics()
       await key(p,'Control+a');await submenu(p,4,5);await key(p,'Home');await key(p,'Insert');
       await click(p,cx-100,cy+27);await key(p,'Control+a');await p.keyboard.type('20000000',{delay:35});await key(p,'Enter');
       const budgetBefore=await diag(p);await processMenu(p,6);await click(p,cx-155,cy+112);
-      await p.waitForFunction(()=>coldeditWeb.diagnostics().error.includes('128 MiB budget'));
+      await p.waitForFunction(()=>coldeditWeb.diagnostics().memory_recovery);
       assert.equal((await diag(p)).processed_bytes,budgetBefore.processed_bytes);assert.equal((await diag(p)).history_states,budgetBefore.history_states);
       assert.deepEqual(errors,[]);reports.push({scale,passed:true,diagnostics:await diag(p)});
       console.log(`PASS cleanup ${scale}x: preview/bypass/cancel, DC, normalization, filters, seven channel tools, snapping, edge fades, memory budget`);
-    }catch(e){await p.screenshot({path:`artifacts/web-cleanup-failure-${scale}.png`});throw e;}finally{await context.close();}
+    }catch(e){await captureFailure(p,`web-cleanup-failure-${scale}`,e);throw e;}finally{await context.close();}
   }}finally{await browser.close();fs.writeFileSync('artifacts/web-cleanup.json',JSON.stringify(reports,null,2));}
 })().catch(e=>{console.error(e);process.exitCode=1;});

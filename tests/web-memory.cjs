@@ -2,7 +2,7 @@
 const {chromium}=require('playwright');
 const assert=require('node:assert/strict'),fs=require('node:fs');
 const MiB=1024*1024, frames=180*44100;
-const tick=p=>p.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
+const {settle:tick,captureFailure}=require('./web-test-helpers.cjs');
 const diag=p=>p.evaluate(()=>coldeditWeb.diagnostics());
 async function key(p,k){await p.keyboard.press(k);await tick(p);}
 async function click(p,x,y){await p.mouse.click(x,y,{delay:50});await tick(p);}
@@ -29,7 +29,9 @@ function fixture(rate=44100){
   try {
     await p.goto(process.env.COLDEDIT_WEB_URL||'http://localhost:8080');await p.waitForFunction(()=>document.querySelector('#loading').hidden);
     assert.equal((await diag(p)).audio_limit,128*MiB);
-    await p.locator('#file-input').setInputFiles(fixture());await p.waitForFunction(()=>coldeditWeb.diagnostics().frames===7938000);
+    // Match the large-file allowance in the lifecycle suite. Import runs on a
+    // WASM worker and includes a second full input copy into its shared heap.
+    await p.locator('#file-input').setInputFiles(fixture());await p.waitForFunction(()=>coldeditWeb.diagnostics().frames===7938000,null,{timeout:120000});
     await processMenu(p,3); // Gain stores metadata and shares the source.
     assert.equal((await diag(p)).audio_bytes,44+frames*4);
     await filter(p);const before=await diag(p);assert.equal(before.history_states,3);assert.equal(before.audio_bytes,44+frames*12);
@@ -90,7 +92,7 @@ function fixture(rate=44100){
     assert.equal((await diag(p)).audio_limit,128*MiB);
     await p.reload();await p.waitForFunction(()=>document.querySelector('#loading').hidden);assert.equal((await diag(p)).audio_limit,128*MiB);
     // At 48 kHz the current + destination float buffers alone exceed 128 MiB.
-    await p.locator('#file-input').setInputFiles(fixture(48000));await p.waitForFunction(()=>coldeditWeb.diagnostics().frames===8640000);
+    await p.locator('#file-input').setInputFiles(fixture(48000));await p.waitForFunction(()=>coldeditWeb.diagnostics().frames===8640000,null,{timeout:120000});
     await filter(p);await filter(p,6);const tooLarge=await diag(p);
     assert.equal(tooLarge.memory_reclaimable,44+8640000*4);
     assert(tooLarge.audio_bytes-tooLarge.memory_reclaimable+tooLarge.memory_needed>tooLarge.audio_limit);
@@ -99,6 +101,6 @@ function fixture(rate=44100){
     assert.deepEqual(errors,[]);
     fs.writeFileSync('artifacts/web-memory.json',JSON.stringify({before,blocked,recovered,tooLarge},null,2));
     console.log('PASS memory: three-minute filters, exact exported samples, cancel, clear/retry, dirty state, clipboard, additive paste, 128/256 setting, persistence, insufficient recovery');
-  } catch(e){await p.screenshot({path:'artifacts/web-memory-failure.png'});throw e;}
+  } catch(e){await captureFailure(p,'web-memory-failure',e);throw e;}
   finally {await context.close();await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

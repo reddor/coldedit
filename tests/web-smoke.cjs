@@ -18,7 +18,7 @@ function fixture() {
 const original = fixture();
 const reports = [];
 const diag = page => page.evaluate(() => window.coldeditWeb.diagnostics());
-async function settle(page) { await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))); }
+const {settle,captureFailure}=require('./web-test-helpers.cjs');
 async function press(page, key) { await page.keyboard.press(key); await settle(page); }
 async function drag(page,x1,y1,x2,y2) {
   await page.mouse.move(x1,y1); await settle(page); await page.mouse.down(); await settle(page);
@@ -38,6 +38,7 @@ async function load(page, name='browser-test.wav', data=original) {
       const errors = [];
       page.on('pageerror',e => errors.push(e.message));
       page.on('console',msg => { if (msg.type()==='error') console.log('browser:',msg.text().slice(0,600)); });
+      try {
       await page.goto(url);
       await page.waitForFunction(() => document.getElementById('loading').hidden,null,{timeout:45000});
       await load(page);
@@ -82,6 +83,7 @@ async function load(page, name='browser-test.wav', data=original) {
       const downloadPromise = page.waitForEvent('download');
       await page.mouse.click(80,76,{delay:50}); await settle(page);
       assert.equal((await diag(page)).popup_open,true,'logo opens export menu');
+      await page.mouse.move(115,178); await settle(page);
       await page.mouse.click(115,178,{delay:50}); await settle(page);
       assert.equal((await diag(page)).popup_open,false,'export closes menu');
       const download = await downloadPromise;
@@ -116,8 +118,9 @@ async function load(page, name='browser-test.wav', data=original) {
       await page.screenshot({path:`artifacts/web-limit-${scale}.png`});
       assert.deepEqual(errors,[]);
       reports.push({scale,passed:true,diagnostics:await diag(page)});
-      await context.close();
       console.log(`PASS browser scale ${scale}: file I/O, boundaries, zoom, playback, history, exact export, limits`);
+      } catch (error) { await captureFailure(page,`web-smoke-failure-${scale}`,error); throw error; }
+      finally { await context.close(); }
     }
   } finally { await browser.close(); fs.writeFileSync('artifacts/web-smoke.json',JSON.stringify(reports,null,2)); }
 })().catch(error => {console.error(error);process.exitCode=1});
