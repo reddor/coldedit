@@ -13,6 +13,7 @@ async function settle(page) {
 }
 
 async function captureFailure(page, name, error) {
+  fs.mkdirSync('artifacts', {recursive: true});
   const state = await page.locator('#canvas').evaluate(() => ({
     diagnostics: window.coldeditWeb?.diagnostics(),
     notice: document.querySelector('#notice-text')?.textContent,

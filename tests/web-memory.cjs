@@ -29,9 +29,7 @@ function fixture(rate=44100){
   try {
     await p.goto(process.env.COLDEDIT_WEB_URL||'http://localhost:8080');await p.waitForFunction(()=>document.querySelector('#loading').hidden);
     assert.equal((await diag(p)).audio_limit,128*MiB);
-    // Match the large-file allowance in the lifecycle suite. Import runs on a
-    // WASM worker and includes a second full input copy into its shared heap.
-    await p.locator('#file-input').setInputFiles(fixture());await p.waitForFunction(()=>coldeditWeb.diagnostics().frames===7938000,null,{timeout:120000});
+    await p.locator('#file-input').setInputFiles(fixture());await p.waitForFunction(()=>coldeditWeb.diagnostics().frames===7938000);
     await processMenu(p,3); // Gain stores metadata and shares the source.
     assert.equal((await diag(p)).audio_bytes,44+frames*4);
     await filter(p);const before=await diag(p);assert.equal(before.history_states,3);assert.equal(before.audio_bytes,44+frames*12);
@@ -92,7 +90,7 @@ function fixture(rate=44100){
     assert.equal((await diag(p)).audio_limit,128*MiB);
     await p.reload();await p.waitForFunction(()=>document.querySelector('#loading').hidden);assert.equal((await diag(p)).audio_limit,128*MiB);
     // At 48 kHz the current + destination float buffers alone exceed 128 MiB.
-    await p.locator('#file-input').setInputFiles(fixture(48000));await p.waitForFunction(()=>coldeditWeb.diagnostics().frames===8640000,null,{timeout:120000});
+    await p.locator('#file-input').setInputFiles(fixture(48000));await p.waitForFunction(()=>coldeditWeb.diagnostics().frames===8640000);
     await filter(p);await filter(p,6);const tooLarge=await diag(p);
     assert.equal(tooLarge.memory_reclaimable,44+8640000*4);
     assert(tooLarge.audio_bytes-tooLarge.memory_reclaimable+tooLarge.memory_needed>tooLarge.audio_limit);

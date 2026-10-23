@@ -62,7 +62,13 @@ std::shared_ptr<AudioFile> AudioFile::open(const std::filesystem::path& p, std::
     const auto bytes = std::filesystem::file_size(p);
     web::checkInput(bytes);
     if (bytes < 12) throw std::runtime_error("Invalid audio file size.");
-    std::ifstream input(p, std::ios::binary);
+    // Emscripten proxies filesystem calls to the browser's main thread. The
+    // default 4 KiB filebuf turns an import into thousands of round trips,
+    // which can starve behind software rendering on high-DPI displays.
+    std::vector<char> fileBuffer(1024 * 1024);
+    std::ifstream input;
+    input.rdbuf()->pubsetbuf(fileBuffer.data(), std::streamsize(fileBuffer.size()));
+    input.open(p, std::ios::binary);
     char signature[4]{}; input.read(signature, 4); input.seekg(0);
     if (!std::memcmp(signature, "RIFF", 4)) m.reservation.resize(bytes);
     m.storage = std::make_unique_for_overwrite<std::uint8_t[]>(std::size_t(bytes));

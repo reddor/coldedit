@@ -2,7 +2,7 @@
 const {chromium}=require('playwright');
 const assert=require('node:assert/strict'),fs=require('node:fs');
 const {PNG}=require('playwright-core/lib/utilsBundle'); // PNG reader bundled with the pinned test runtime.
-const tick=p=>p.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
+const {settle:tick,captureFailure}=require('./web-test-helpers.cjs');
 const diag=p=>p.evaluate(()=>coldeditWeb.diagnostics());
 async function settled(p){await tick(p);await p.waitForFunction(()=>{const d=coldeditWeb.diagnostics();return Math.abs(d.view_span-d.view_target_span)<.01&&Math.abs(d.view_start-d.view_target_start)<.01;});}
 function fixture(dc=false){
@@ -97,6 +97,6 @@ function checkPixels(buffer,scale){
       }
       reports.push(await checkAnimation(p,scale));
       assert.deepEqual(errors,[]);console.log(`PASS waveform ${scale}x: envelope, sample detail, animation coverage, no audio or history mutation`);
-    }finally{await context.close();}
+    }catch(e){await captureFailure(p,`web-waveform-failure-${scale}`,e);throw e;}finally{await context.close();}
   }}finally{await browser.close();fs.writeFileSync('artifacts/web-waveform.json',JSON.stringify(reports,null,2));}
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -1,5 +1,6 @@
 // Isolated server and browser tests; no user browser profile or existing server.
 const {spawn}=require('node:child_process');
+require('node:fs').mkdirSync('artifacts',{recursive:true});
 const port=process.env.COLDEDIT_TEST_PORT||'8091';
 const server=spawn(process.execPath,['web/serve.mjs','build-web/site',port],{windowsHide:true,stdio:['ignore','pipe','inherit']});
 (async()=>{

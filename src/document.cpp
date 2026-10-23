@@ -298,7 +298,16 @@ void exportAudio(const Timeline& t, const std::filesystem::path& path, ExportFor
     if (wav && size + (size & 1) + extra > UINT32_MAX) throw std::runtime_error("Export exceeds the RIFF/WAV 4 GiB limit. Trim the audio or use a lower bit depth.");
     auto temp = path; temp += ".coldedit-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".tmp";
     try {
+#ifdef __EMSCRIPTEN__
+        // Batch writes before crossing to main-thread MEMFS. Small filebuf
+        // flushes otherwise compete with every software-rendered UI frame.
+        std::vector<char> fileBuffer(1024 * 1024);
+        std::ofstream f;
+        f.rdbuf()->pubsetbuf(fileBuffer.data(), std::streamsize(fileBuffer.size()));
+        f.open(temp, std::ios::binary | std::ios::trunc);
+#else
         std::ofstream f(temp, std::ios::binary | std::ios::trunc);
+#endif
         if (!f) throw std::runtime_error("Cannot create the export file.");
         if (flac) writeFlac(t, f, bits, progress, stop);
         else if (isMp3(format)) writeMp3(t, f, mp3Bitrate(format), progress, stop);
