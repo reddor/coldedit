@@ -1,5 +1,6 @@
 #include "editor.hpp"
 #include "platform.hpp"
+#include "waveform.hpp"
 #include "imgui_impl_opengl3.h"
 #include <GLFW/glfw3.h>
 #include <algorithm>
@@ -8,6 +9,8 @@
 #include <iomanip>
 #include <sstream>
 #include <limits>
+#include <utility>
+#include <unordered_set>
 #ifdef __EMSCRIPTEN__
 #include "web_limits.hpp"
 #endif
@@ -37,6 +40,9 @@ double tickStep(double seconds) {
 
 Editor::Editor(GLFWwindow* window) : window_(window) {
     wheelZooms_ = loadWheelZoomPreference();
+#ifdef __EMSCRIPTEN__
+    web::setAudioLimit(std::uint64_t(loadWebAudioBudget()) * 1024 * 1024);
+#endif
     auto& io = ImGui::GetIO(); io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     auto& s = ImGui::GetStyle(); ImGui::StyleColorsDark();
@@ -192,7 +198,7 @@ void Editor::acceptFile(std::shared_ptr<AudioFile> file, const std::filesystem::
         // Do not retain another document's audio through the browser clipboard.
         clipboard_.clear();
 #endif
-        playback_.pause(); document_.open(file); source_ = std::move(file); sourcePath_ = p;
+        playback_.pause(); document_.open(file); source_ = std::make_unique<SourceInfo>(file); sourcePath_ = p;
         title_ = utf8(p.filename());
         cursor_ = anchor_ = head_ = 0;
         selecting_ = boundaryDrag_.active = rangeDrag_.active = false; view_.fit(double(source_->frames));
@@ -236,15 +242,52 @@ void Editor::exportDialog(bool selectionOnly) {
     exportPathPopup_ = true;
 #endif
 }
-void Editor::startJob(const std::string& name, std::function<void(std::stop_token)> task, std::function<void()> done) {
+void Editor::startJob(const std::string& name, std::function<void(std::stop_token)> task, std::function<void()> done, std::function<void()> retry) {
     if (busy_) return;
     if (job_.joinable()) job_.join();
     busy_.store(true); jobDone_.store(false); jobProgress_.store(0); jobLabel_ = name; jobError_.clear(); jobSuccess_.clear(); onJobDone_ = std::move(done);
-    job_ = std::jthread([this, task = std::move(task)](std::stop_token stop) {
-        try { task(stop); } catch (const std::exception& e) { std::lock_guard lock(jobMutex_); jobError_ = e.what(); }
+    onJobRetry_ = std::move(retry); jobMemoryNeeded_ = 0;
+    const bool sync = syncPlayback_; syncPlayback_ = false;
+    job_ = std::jthread([this, task = std::move(task), sync](std::stop_token stop) {
+        try {
+            if (sync && !playback_.waitForTimeline(stop)) throw std::runtime_error("Processing cancelled.");
+            task(stop);
+        }
+#ifdef __EMSCRIPTEN__
+        catch (const web::AudioBudgetExceeded& e) { jobError_ = e.what(); jobMemoryNeeded_ = e.additionalBytes; }
+#endif
+        catch (const std::exception& e) { std::lock_guard lock(jobMutex_); jobError_ = e.what(); }
         jobDone_.store(true, std::memory_order_release);
     });
 }
+std::uint64_t Editor::reclaimableAudioBytes() const {
+    auto retained = clipboard_;
+    for (const auto& t : {cleanupBase_, std::shared_ptr<const Timeline>(cleanupPreview_)})
+        if (t) retained.insert(retained.end(), t->pieces.begin(), t->pieces.end());
+    return document_.reclaimableAudioBytes(retained);
+}
+std::size_t Editor::currentPeakBytes() const {
+    const auto t = document_.timeline(); if (!t) return 0;
+    std::unordered_set<const AudioFile*> counted;
+    std::size_t bytes = 0;
+    for (const auto& p : t->pieces) if (p.source && counted.insert(p.source.get()).second) bytes += p.source->peakBytes();
+    return bytes;
+}
+#ifdef __EMSCRIPTEN__
+void Editor::audioBudgetSetting() {
+    const auto used = AudioFile::audioBytes();
+    for (const unsigned mib : {128u, 256u}) {
+        const auto bytes = std::uint64_t(mib) * 1024 * 1024;
+        ImGui::BeginDisabled(busy_ || used > bytes);
+        if (ImGui::RadioButton(mib == 128 ? "128 MiB (default)" : "256 MiB", web::audioLimit.load() == bytes) && web::setAudioLimit(bytes)) {
+            status_ = saveWebAudioBudget(mib) ? "Web audio budget: " + std::to_string(mib) + " MiB" : "Audio budget changed for this session; could not save it.";
+        }
+        ImGui::EndDisabled();
+        if (used > bytes && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Retained audio must fit before lowering the budget.");
+    }
+    ImGui::TextDisabled("Audio in use: %.1f MiB", used / 1048576.);
+}
+#endif
 void Editor::exportTo(const std::filesystem::path& requestedPath, bool selectionOnly) {
     auto t = document_.timeline();
     if (!t || (selectionOnly && !selected())) return;
@@ -318,7 +361,8 @@ void Editor::prepareCleanup(bool apply) {
     auto result = std::make_shared<std::shared_ptr<Timeline>>();
     startJob(cleanupName(settings.kind), [this, base, a, b, settings, result](std::stop_token stop) {
         *result = processAudio(*base, a, b, settings, &jobProgress_, stop);
-    }, [this, result, apply] { cleanupPreview_ = std::move(*result); prepareCleanup(apply); });
+    }, [this, result, apply] { cleanupPreview_ = std::move(*result); prepareCleanup(apply); },
+       [this, apply] { cleanupPopup_ = true; prepareCleanup(apply); });
 }
 void Editor::action(const std::string& name) try {
     auto t = document_.timeline(); if (!t || busy_) return;
@@ -367,7 +411,8 @@ void Editor::action(const std::string& name) try {
             const auto a = first(), b = last(); auto result = std::make_shared<std::shared_ptr<Timeline>>();
             startJob("Pasting into selection", [this, t, clip, a, b, result](std::stop_token stop) {
                 *result = mixAudio(*t, *clip, a, b, &jobProgress_, stop);
-            }, [this, result] { document_.apply(std::move(*result), "Paste into selection"); afterEdit("Mixed clipboard audio into selection"); });
+            }, [this, result] { document_.apply(std::move(*result), "Paste into selection"); afterEdit("Mixed clipboard audio into selection"); },
+               [this] { action("paste"); });
             return;
         }
         const Frame pos = std::min(selected() ? first() : cursor_, t->frames), end = selected() ? last() : cursor_;
@@ -591,6 +636,13 @@ void Editor::mainMenu() {
                 ImGui::TextDisabled("MP3 output: %.2f kHz", mp3SampleRate(t->sampleRate, mp3Bitrate(format)) / 1000.);
             ImGui::EndMenu();
         }
+#ifdef __EMSCRIPTEN__
+        if (ImGui::BeginMenu("Web audio budget", !busy_)) {
+            audioBudgetSetting();
+            ImGui::TextDisabled("256 MiB allows more edits, but uses more memory.");
+            ImGui::EndMenu();
+        }
+#endif
         if (ImGui::MenuItem("Keyboard shortcuts", "F1")) run = [this] { help_ = true; };
 #ifndef __EMSCRIPTEN__
         if (ImGui::MenuItem("Quit", nullptr, false, !busy_)) run = [this] { requestClose(); };
@@ -662,19 +714,25 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
         d.AddLine({end, p.y}, {end, bottom}, muted);
         label({end + 8, top + 8}, "END OF AUDIO", muted);
     }
-    const int columns = std::max(1, int(std::ceil(width * dpi_.raster)));
-    const float columnWidth = width / columns;
+    // Anchor columns to the framebuffer grid, including partial pixels at the
+    // plot edges on fractional DPI scales. Never round the sample coordinates.
+    const double rasterLeft = double(left) * dpi_.raster, rasterRight = double(right) * dpi_.raster;
+    const int firstPixel = int(std::floor(rasterLeft));
+    const int columns = std::max(1, int(std::ceil(rasterRight)) - firstPixel);
     const double samplesPerPixel = view_.span / columns;
     const bool peaksReady = std::all_of(t->pieces.begin(), t->pieces.end(), [](const Piece& piece) { return !piece.source || piece.source->peaksReady(); });
-    if (samplesPerPixel > 2 && (waveformTimeline_ != t.get() || waveformStart_ != view_.start || waveformSpan_ != view_.span || waveformColumns_ != columns || !waveformReady_)) {
+    if (waveformTimeline_ != t.get() || waveformStart_ != view_.start || waveformSpan_ != view_.span || waveformColumns_ != columns ||
+        waveformRasterLeft_ != rasterLeft || waveformRasterRight_ != rasterRight || !waveformReady_) {
         waveformCache_.resize(std::size_t(columns) * t->channels);
+        const auto frameAtEdge = [&](int x) {
+            return view_.start + std::clamp((firstPixel + x - rasterLeft) / (rasterRight - rasterLeft), 0., 1.) * view_.span;
+        };
         for (unsigned c = 0; c < t->channels; ++c) for (int x = 0; x < columns; ++x) {
-            const Frame a = Frame(std::floor(view_.start + double(x) * samplesPerPixel));
-            const Frame b = Frame(std::ceil(view_.start + double(x + 1) * samplesPerPixel));
-            waveformCache_[std::size_t(c) * columns + x] = t->peak(a, b, c);
+            waveformCache_[std::size_t(c) * columns + x] = waveformPeak(*t, frameAtEdge(x), frameAtEdge(x + 1), c);
         }
         waveformTimeline_ = t.get(); waveformStart_ = view_.start; waveformSpan_ = view_.span;
         waveformColumns_ = columns; waveformReady_ = peaksReady;
+        waveformRasterLeft_ = rasterLeft; waveformRasterRight_ = rasterRight;
     }
     for (unsigned c = 0; c < t->channels; ++c) {
         const float center = top + laneH * (c + .5f), amplitude = std::max(1.f, laneH * .38f);
@@ -684,22 +742,20 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
             d.AddLine({left, y}, {right, y}, v == 0 ? IM_COL32(57, 72, 80, 255) : IM_COL32(31, 39, 46, 255));
         }
         const ImU32 color = c ? blue : teal;
-        if (samplesPerPixel <= 2) {
+        for (int x = 0; x < columns; ++x) {
+            const auto peak = waveformCache_[std::size_t(c) * columns + x];
+            const float lo = center - std::clamp(peak.hi * verticalZoom_, -1.2f, 1.2f) * amplitude;
+            const float hi = center - std::clamp(peak.lo * verticalZoom_, -1.2f, 1.2f) * amplitude;
+            const int pixel = firstPixel + x;
+            const float coverage = float(std::min(double(pixel + 1), rasterRight) - std::max(double(pixel), rasterLeft));
+            d.AddWaveformColumn(pixel, lo, hi, color, dpi_.raster, coverage);
+        }
+        if (samplesPerPixel < .16) {
             const Frame firstFrame = std::max<Frame>(0, Frame(std::floor(view_.start)) - 1);
             const Frame endFrame = std::min(t->frames, Frame(std::ceil(view_.start + view_.span)) + 1);
-            ImVec2 previous{}; bool havePrevious = false;
             for (Frame f = firstFrame; f < endFrame; ++f) {
                 const ImVec2 point{xAt(double(f)), center - std::clamp(t->sample(f, c) * verticalZoom_, -1.2f, 1.2f) * amplitude};
-                if (havePrevious) d.AddLine(previous, point, color, 1.3f);
-                if (samplesPerPixel < .16) d.AddCircleFilled(point, 2.2f, color);
-                previous = point; havePrevious = true;
-            }
-        } else {
-            for (int x = 0; x < columns; ++x) {
-                const auto peak = waveformCache_[std::size_t(c) * columns + x];
-                const float lo = center - std::clamp(peak.hi * verticalZoom_, -1.2f, 1.2f) * amplitude;
-                const float hi = center - std::clamp(peak.lo * verticalZoom_, -1.2f, 1.2f) * amplitude;
-                if (hi - lo > .1f / dpi_.raster) d.AddRectFilled({left + x * columnWidth, lo}, {left + (x + 1) * columnWidth, std::max(hi, lo + columnWidth)}, color);
+                d.AddCircleFilled(point, 2.2f, color);
             }
         }
         d.PopClipRect();
@@ -745,8 +801,16 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
     }
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         const Frame frame = frameAtMouse();
-        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-            anchor_ = 0; head_ = t->frames; selecting_ = boundaryDrag_.active = rangeDrag_.active = false;
+        const bool doubleClick = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+        // The first click can move a selection edge or clear the range on the ruler.
+        // Toggle using the selection that existed before that first click.
+        if (!doubleClick) fullSelectionAtClick_ = selected() && first() == 0 && last() == t->frames;
+        if (doubleClick) {
+            if (fullSelectionAtClick_) {
+                anchor_ = head_ = cursor_ = std::clamp(frame, Frame(0), t->frames);
+                playback_.seek(cursor_);
+            } else { anchor_ = 0; head_ = t->frames; }
+            selecting_ = boundaryDrag_.active = rangeDrag_.active = false;
         } else if (edge != SelectionEdge::None && !io.KeyShift && !io.KeyAlt) {
             rangeDrag_.active = false;
             boundaryDragLimit_ = selectionExtent();
@@ -822,10 +886,13 @@ void Editor::overview(ImVec2 p, ImVec2 size) {
         overviewTimeline_ = t.get(); overviewReady_ = ready; overviewCache_.resize(columns);
         for (int x = 0; x < columns; ++x) overviewCache_[x] = t->peak(Frame(double(x) / columns * total), Frame(double(x + 1) / columns * total), 0);
     }
+    envelopeUpper_.resize(columns); envelopeLower_.resize(columns);
     for (int x = 0; x < columns; ++x) {
         const auto peak = overviewCache_[x]; const float center = p.y + size.y * .5f;
-        d.AddLine({p.x + (x + .5f) * columnWidth, center - peak.hi * size.y * .43f}, {p.x + (x + .5f) * columnWidth, center - peak.lo * size.y * .43f}, IM_COL32(74, 113, 113, 255), columnWidth);
+        envelopeUpper_[x] = {p.x + (x + .5f) * columnWidth, center - peak.hi * size.y * .43f};
+        envelopeLower_[x] = {p.x + (x + .5f) * columnWidth, center - peak.lo * size.y * .43f};
     }
+    d.AddEnvelope(envelopeUpper_.data(), envelopeLower_.data(), columns, IM_COL32(74, 113, 113, 255), 1.f / dpi_.raster);
     const float a = p.x + float(view_.start / total) * size.x, b = p.x + float((view_.start + view_.span) / total) * size.x;
     d.AddRectFilled({a, p.y}, {b, p.y + size.y}, IM_COL32(98, 222, 193, 20), 4);
     d.AddRect({a, p.y}, {b, p.y + size.y}, IM_COL32(98, 222, 193, 170), 4, 0, 1);
@@ -846,6 +913,15 @@ void Editor::overview(ImVec2 p, ImVec2 size) {
 void Editor::inspector(ImVec2 p, ImVec2 size) {
     ImGui::SetCursorScreenPos(px(p)); ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, px({16, 16}));
     ImGui::BeginChild("Inspector", px(size), ImGuiChildFlags_AlwaysUseWindowPadding);
+    const auto buttonPair = [&](const char* left, const char* leftAction, const char* right, const char* rightAction) {
+        const auto& style = ImGui::GetStyle();
+        const float halfWidth = std::floor((ImGui::GetContentRegionAvail().x - style.ItemSpacing.x) * .5f);
+        const float labelWidth = std::max(ImGui::CalcTextSize(left).x, ImGui::CalcTextSize(right).x);
+        const bool sameRow = halfWidth >= labelWidth + 2 * style.FramePadding.x;
+        if (button(left, {sameRow ? halfWidth / dpi_.layout : -1.f, 34})) action(leftAction);
+        if (sameRow) ImGui::SameLine();
+        if (button(right, {-1, 34})) action(rightAction);
+    };
     if (compact_) {
         ImGui::Text("Playhead  %s", timecode(double(cursor_), source_ ? source_->sampleRate : 48000, true).c_str());
         ImGui::SetNextItemWidth(-1);
@@ -872,12 +948,12 @@ void Editor::inspector(ImVec2 p, ImVec2 size) {
     ImGui::Spacing(); ImGui::TextDisabled("FADE SELECTION");
     const char* curves[] = {"Linear", "Smooth"};
     ImGui::SetNextItemWidth(-1); ImGui::Combo("##fade-curve", &fadeCurve_, curves, 2);
-    if (button("Fade in", {98, 34})) action("fade-in"); ImGui::SameLine(); if (button("Fade out", {-1, 34})) action("fade-out");
+    buttonPair("Fade in", "fade-in", "Fade out", "fade-out");
     ImGui::EndDisabled();
     if (!selected()) ImGui::TextDisabled("Select a range to fade.");
     ImGui::Spacing(); ImGui::BeginDisabled(!selected());
     if (button("Zoom to selection", {-1, 34})) action("zoom-selection");
-    if (button("Trim", {98, 34})) action("trim"); ImGui::SameLine(); if (button("Delete", {-1, 34})) action("delete");
+    buttonPair("Trim", "trim", "Delete", "delete");
     if (button("Save selection...", {-1, 34})) exportDialog(true);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Save selected audio using the export format below.\nCtrl+Shift+E");
     ImGui::EndDisabled();
@@ -889,24 +965,26 @@ void Editor::inspector(ImVec2 p, ImVec2 size) {
     if (button("Apply gain", {-1, 34})) action("gain");
     if (button("Normalize...", {-1, 34})) normalize();
     if (button("Remove DC offset...", {-1, 34})) action("dc");
-    if (button("High-pass...", {98, 34})) action("high-pass"); ImGui::SameLine(); if (button("Low-pass...", {-1, 34})) action("low-pass");
-    if (button("Reverse", {98, 34})) action("reverse"); ImGui::SameLine(); if (button("Silence", {-1, 34})) action("silence");
+    buttonPair("High-pass...", "high-pass", "Low-pass...", "low-pass");
+    buttonPair("Reverse", "reverse", "Silence", "silence");
     ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
-    if (ImGui::TreeNode("Clean edit boundaries")) {
+    // These sections already sit inside a padded panel; keep the full content
+    // width for controls instead of spending another indent on their labels.
+    if (ImGui::TreeNodeEx("Clean edit boundaries", ImGuiTreeNodeFlags_NoTreePushOnOpen)) {
         ImGui::Checkbox("Snap to zero crossings", &snapZero_);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("On selection release: search within 5 ms.\nStereo chooses the quietest crossing across both channels.\nExact sample entry stays exact. Press J to snap explicitly.");
         ImGui::Checkbox("Automatic edge fades", &autoEdgeFades_);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Short Smooth fades around cut, delete, paste, trim and inserted silence.\nIncluded in the edit's single undo step.");
         ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##edge-ms", &edgeFadeMs_, 1, 10, "Edges  %.1f ms");
-        ImGui::BeginDisabled(!selected()); if (button("Fade selection edges", {-1, 34})) action("edge-fades"); ImGui::EndDisabled(); ImGui::TreePop();
+        ImGui::BeginDisabled(!selected()); if (button("Fade selection edges", {-1, 34})) action("edge-fades"); ImGui::EndDisabled();
     }
-    if (ImGui::TreeNode("Channel tools")) {
+    if (ImGui::TreeNodeEx("Channel tools", ImGuiTreeNodeFlags_NoTreePushOnOpen)) {
         ImGui::TextWrapped("Conversion applies to the entire document.");
         ImGui::BeginDisabled(!t || t->channels != 2);
-        if (button("Extract left", {98, 34})) action("extract-left"); ImGui::SameLine(); if (button("Extract right", {-1, 34})) action("extract-right");
+        buttonPair("Extract left", "extract-left", "Extract right", "extract-right");
         if (button("Mix to mono", {-1, 34})) action("mono"); if (button("Swap left / right", {-1, 34})) action("swap"); ImGui::EndDisabled();
         ImGui::TextWrapped(selected() ? "Polarity: selected range." : "Polarity: entire document.");
-        if (button("Invert polarity", {-1, 34})) action("invert"); ImGui::TreePop();
+        if (button("Invert polarity", {-1, 34})) action("invert");
     }
     ImGui::EndDisabled();
     ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing(); ImGui::TextDisabled("EXPORT FORMAT");
@@ -943,6 +1021,7 @@ void Editor::emptyState(ImVec2 p, ImVec2 size) {
     if (!compact_ || size.y > 330) centeredLabel(cy + 145, compact_ ? "Audio stays on your device." : "WAV / FLAC / MP3    /    MONO & STEREO", muted, bodyFont_);
 }
 void Editor::modals() {
+    std::function<void()> retryAfterPopup;
     if (confirmDiscard_) { ImGui::OpenPopup("Keep your changes?"); confirmDiscard_ = false; }
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, px(compact_ ? ImVec2{16, 16} : ImVec2{24, 22}));
     const float modalWidth = std::min(520.f, logical(ImGui::GetIO().DisplaySize).x - 24);
@@ -1049,7 +1128,46 @@ void Editor::modals() {
         }
         ImGui::EndPopup();
     }
-    if (!error_.empty()) ImGui::OpenPopup("A quick note");
+#ifdef __EMSCRIPTEN__
+    if (memoryRetry_) ImGui::OpenPopup("Audio memory budget");
+    ImGui::SetNextWindowPos({ImGui::GetIO().DisplaySize.x * .5f, ImGui::GetIO().DisplaySize.y * .5f}, ImGuiCond_Always, {.5f, .5f});
+    ImGui::SetNextWindowSize({px(modalWidth), 0}, ImGuiCond_Always);
+    fitModal();
+    if (ImGui::BeginPopupModal("Audio memory budget", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const auto used = AudioFile::audioBytes(), reclaimed = reclaimableAudioBytes(), limit = web::audioLimit.load();
+        const auto after = used - std::min(used, reclaimed);
+        const bool fits = used <= limit && memoryNeeded_ <= limit - used;
+        const bool fitsCleared = reclaimed && after <= limit && memoryNeeded_ <= limit - after;
+        ImGui::TextWrapped("%s needs another %.1f MiB of audio storage.", jobLabel_.c_str(), memoryNeeded_ / 1048576.);
+        ImGui::Spacing(); audioBudgetSetting(); ImGui::Spacing();
+        ImGui::TextWrapped("Clearing undo and redo can free %.1f MiB.", reclaimed / 1048576.);
+        ImGui::TextWrapped("Your current audio, selection, clipboard and unsaved changes will be kept. Cleared edits cannot be undone.");
+        if (!fits && !fitsCleared) {
+            ImGui::Spacing();
+            ImGui::TextWrapped("Clearing undo is not enough at this budget. Increase the budget, process a shorter selection, or use the native app.");
+        }
+        ImGui::Spacing();
+        ImGui::BeginDisabled(!fits);
+        if (button("Retry", {-1, 36}, fits)) {
+            retryAfterPopup = std::exchange(memoryRetry_, {}); error_.clear(); memoryNeeded_ = 0; ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::BeginDisabled(!fitsCleared);
+        if (button("Clear undo and retry", {-1, 36}, !fits && fitsCleared)) {
+            // Release any retired playback revision before the retry allocates.
+            playback_.setTimeline(document_.timeline(), cursor_);
+            document_.clearHistory(); syncPlayback_ = true;
+            retryAfterPopup = std::exchange(memoryRetry_, {}); error_.clear(); memoryNeeded_ = 0; ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        if (button("Cancel", {-1, 36}) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            memoryRetry_ = {}; memoryNeeded_ = 0; error_.clear(); ImGui::CloseCurrentPopup();
+            if (cleanupBase_) cleanupPopup_ = true;
+        }
+        ImGui::EndPopup();
+    }
+#endif
+    if (!error_.empty() && !memoryRetry_) ImGui::OpenPopup("A quick note");
     fitModal();
     if (ImGui::BeginPopupModal("A quick note", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::PushTextWrapPos(px(std::min(460.f, contentWidth))); ImGui::TextUnformatted(error_.c_str()); ImGui::PopTextWrapPos();
@@ -1059,7 +1177,7 @@ void Editor::modals() {
     fitModal();
     if (ImGui::BeginPopupModal("Find your way around", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextUnformatted("TIMELINE"); ImGui::Spacing();
-        const char* rows[][2] = {{wheelZooms_ ? "Wheel" : "Ctrl + wheel", "Zoom around the pointer"}, {wheelZooms_ ? "Ctrl + wheel" : "Wheel", "Scroll through audio"}, {"Horizontal wheel", "Scroll through audio"}, {"Navigator wheel", "Zoom around the current view"}, {"Middle-button drag", "Pan directly"}, {"Alt + wheel", "Adjust vertical scale"}, {"Drag / Shift-click", "Select / extend range"}, {"Drag inside / Alt-drag", "Move range / draw new range"}, {"Double-click", "Select all"}, {"Space / L", "Play-pause / toggle loop"}, {"F / Z", "Fit file / zoom to selection"}, {"Ctrl + X / C / V", "Cut / copy / paste (mix into selection)"}, {"Ctrl + Shift + V", "Replace selection with clipboard"}, {"Ctrl + T / Delete", "Trim / delete selection"}, {"Ctrl + Z / Ctrl + Shift + Z", "Undo / redo"}, {"R / Home / End", "Reverse / jump to start / end"}, {"Ctrl + O / Ctrl + E", "Open audio / export audio"}, {"I / O", "Fade in / fade out selection"}, {"Insert", "Insert silence at cursor"}, {"J", "Snap selection to zero crossings"}, {"Ctrl + Shift + E", "Save selected audio (WAV/FLAC/MP3)"}};
+        const char* rows[][2] = {{wheelZooms_ ? "Wheel" : "Ctrl + wheel", "Zoom around the pointer"}, {wheelZooms_ ? "Ctrl + wheel" : "Wheel", "Scroll through audio"}, {"Horizontal wheel", "Scroll through audio"}, {"Navigator wheel", "Zoom around the current view"}, {"Middle-button drag", "Pan directly"}, {"Alt + wheel", "Adjust vertical scale"}, {"Drag / Shift-click", "Select / extend range"}, {"Drag inside / Alt-drag", "Move range / draw new range"}, {"Double-click", "Select all / clear full selection"}, {"Space / L", "Play-pause / toggle loop"}, {"F / Z", "Fit file / zoom to selection"}, {"Ctrl + X / C / V", "Cut / copy / paste (mix into selection)"}, {"Ctrl + Shift + V", "Replace selection with clipboard"}, {"Ctrl + T / Delete", "Trim / delete selection"}, {"Ctrl + Z / Ctrl + Shift + Z", "Undo / redo"}, {"R / Home / End", "Reverse / jump to start / end"}, {"Ctrl + O / Ctrl + E", "Open audio / export audio"}, {"I / O", "Fade in / fade out selection"}, {"Insert", "Insert silence at cursor"}, {"J", "Snap selection to zero crossings"}, {"Ctrl + Shift + E", "Save selected audio (WAV/FLAC/MP3)"}};
         if (ImGui::BeginTable("keys", 2, 0, px({compact_ ? contentWidth : 510, 0}))) { for (auto& row : rows) { ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextWrapped("%s", row[0]); ImGui::TableNextColumn(); ImGui::TextWrapped("%s", row[1]); } ImGui::EndTable(); }
         ImGui::Spacing(); if (button("Back to the sound", {-1, 36}, true)) ImGui::CloseCurrentPopup(); ImGui::EndPopup();
     }
@@ -1076,6 +1194,7 @@ void Editor::modals() {
         if (button("Export")) { exportTo(fromUtf8(pathInput_), selectionExport_); ImGui::CloseCurrentPopup(); } ImGui::SameLine(); if (button("Cancel")) { continueAfterExport_ = false; ImGui::CloseCurrentPopup(); } ImGui::EndPopup();
     }
     ImGui::PopStyleVar();
+    if (retryAfterPopup) retryAfterPopup();
 }
 bool Editor::animating() const { return ImGui::GetTime() - lastInteraction_ < .3 || ImGui::IsAnyItemActive() || playback_.playing() || busy_ || selecting_ || (source_ && !source_->peaksReady() && source_->peakProgress() >= 0) || view_.start != view_.targetStart || view_.span != view_.targetSpan; }
 void Editor::render() {
@@ -1083,7 +1202,8 @@ void Editor::render() {
         if (job_.joinable()) job_.join(); busy_.store(false);
         // Move the callback before invoking it: exporting from the discard prompt
         // may start an import with its own completion callback.
-        auto done = std::move(onJobDone_);
+        auto done = std::exchange(onJobDone_, {});
+        auto retry = std::exchange(onJobRetry_, {});
         const auto failure = jobError_;
         if (opening_) {
             opening_ = false;
@@ -1091,7 +1211,10 @@ void Editor::render() {
             webClearImport();
 #endif
         }
-        if (!failure.empty()) error_ = failure; else if (done) done();
+        if (!failure.empty()) {
+            error_ = failure;
+            if (jobMemoryNeeded_ && retry) { memoryNeeded_ = jobMemoryNeeded_; memoryRetry_ = std::move(retry); }
+        } else if (done) done();
     }
     auto& io = ImGui::GetIO();
     if (document_.timeline()) view_.bounds(double(std::max(selectionExtent(), rangeDrag_.active ? rangeDrag_.limit : boundaryDrag_.active ? boundaryDragLimit_ : Frame(0))));
@@ -1127,7 +1250,7 @@ void Editor::render() {
         inspector({width - 250, 291}, {226, height - 337});
     }
     auto d = drawList(); d.AddLine({0, height - 37}, {width, height - 37}, line);
-    const auto performance = decimal(source_ ? source_->peakBytes() / 1048576. : 0, 1) + " MB peaks  /  " + decimal(resident_ / 1048576., 0) +
+    const auto performance = decimal(currentPeakBytes() / 1048576., 1) + " MB peaks  /  " + decimal(resident_ / 1048576., 0) +
 #ifdef __EMSCRIPTEN__
         " MB WASM heap";
     webSetDirty(document_.dirty());
@@ -1281,13 +1404,19 @@ std::string Editor::diagnostics() const {
         << ",\n  \"follow_playback\": " << (follow_ ? "true" : "false")
         << ",\n  \"title\": " << std::quoted(title_)
         << ",\n  \"error\": " << std::quoted(error_)
-        << ",\n  \"peak_bytes\": " << (source_ ? source_->peakBytes() : 0)
+        << ",\n  \"peak_bytes\": " << currentPeakBytes()
         << ",\n  \"resident_bytes\": " << residentBytes()
         << ",\n  \"history_states\": " << document_.historySize()
         << ",\n  \"frames\": " << (document_.timeline() ? document_.timeline()->frames : 0)
         << ",\n  \"channels\": " << (document_.timeline() ? document_.timeline()->channels : 0)
         << ",\n  \"processed_bytes\": " << AudioFile::processedBytes()
         << ",\n  \"audio_bytes\": " << AudioFile::audioBytes()
+#ifdef __EMSCRIPTEN__
+        << ",\n  \"audio_limit\": " << web::audioLimit.load()
+        << ",\n  \"memory_recovery\": " << (memoryRetry_ ? "true" : "false")
+        << ",\n  \"memory_needed\": " << memoryNeeded_
+        << ",\n  \"memory_reclaimable\": " << (memoryRetry_ ? reclaimableAudioBytes() : 0)
+#endif
         << ",\n  \"export_format\": " << exportFormat_
         << ",\n  \"sample_rate\": " << (source_ ? source_->sampleRate : 0)
         << ",\n  \"cleanup_preview\": " << (cleanupPreview_ ? "true" : "false")

@@ -127,7 +127,7 @@ jobs:
             && '[{"suite":"lifecycle","tests":"web-smoke.cjs web-lifecycle.cjs"},
                  {"suite":"controls","tests":"web-toolbar.cjs web-wheel.cjs"},
                  {"suite":"editing","tests":"web-features.cjs web-selection.cjs"},
-                 {"suite":"cleanup","tests":"web-cleanup.cjs"},
+                 {"suite":"cleanup","tests":"web-cleanup.cjs web-memory.cjs web-waveform.cjs"},
                  {"suite":"codecs","tests":"web-codecs.cjs web-mp3.cjs"},
                  {"suite":"mobile","tests":"web-mobile.cjs"}]'
             || '[{"suite":"smoke","tests":"web-smoke.cjs"}]') }}

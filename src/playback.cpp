@@ -53,6 +53,11 @@ void Playback::play(Frame p, Frame first, Frame last, bool loop) {
     transport_.store(((transport_.load() >> 1) + 1) * 2 + 1, std::memory_order_release);
     wake_.notify_all();
 }
+bool Playback::waitForTimeline(std::stop_token stop) {
+    std::unique_lock lock(commandMutex_);
+    const auto generation = transport_.load() >> 1;
+    return wake_.wait(lock, stop, [&] { return adoptedGeneration_ >= generation; });
+}
 void Playback::pause() { transport_.fetch_and(~std::uint64_t(1)); }
 void Playback::seek(Frame p) {
     std::lock_guard lock(commandMutex_);
@@ -73,6 +78,7 @@ void Playback::produce(std::stop_token stop) {
             t = timeline_; cursor = double(requestedPosition_); first = loopStart_;
             loop = loop_; end = t ? (loop ? loopEnd_ : t->frames) : 0;
             gen = transport_.load() >> 1; exhausted = !t || end == 0;
+            adoptedGeneration_ = gen; wake_.notify_all();
         }
         if (!playing() || exhausted || !t) {
             std::unique_lock lock(commandMutex_);

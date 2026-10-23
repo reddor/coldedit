@@ -3,16 +3,30 @@
 #include <atomic>
 #include <algorithm>
 #include <stdexcept>
+#include <string>
 
 namespace coldedit::web {
 inline constexpr std::uint64_t inputLimit = 64ull * 1024 * 1024;
 inline constexpr std::uint64_t exportLimit = 128ull * 1024 * 1024;
-inline constexpr std::uint64_t audioLimit = 128ull * 1024 * 1024;
+inline constexpr std::uint64_t defaultAudioLimit = 128ull * 1024 * 1024;
+inline constexpr std::uint64_t extendedAudioLimit = 256ull * 1024 * 1024;
+inline std::atomic<std::uint64_t> audioLimit{defaultAudioLimit};
 inline std::atomic<std::uint64_t> audioBytes{0};
+inline bool setAudioLimit(std::uint64_t bytes) {
+    if ((bytes != defaultAudioLimit && bytes != extendedAudioLimit) || bytes < audioBytes.load()) return false;
+    audioLimit.store(bytes); return true;
+}
+struct AudioBudgetExceeded : std::runtime_error {
+    std::uint64_t additionalBytes;
+    explicit AudioBudgetExceeded(std::uint64_t additional)
+        : std::runtime_error("Audio would exceed the web editor's shared " + std::to_string(audioLimit.load() / (1024 * 1024)) +
+            " MiB budget (including effects, clipboard and undo history). Choose a larger audio budget in the ColdEdit menu, process a shorter selection, or use the native app."), additionalBytes(additional) {}
+};
 inline void checkAudio(std::uint64_t bytes, std::uint64_t owned = 0) {
     const auto others = audioBytes.load() - owned;
-    if (bytes > audioLimit - std::min(others, audioLimit))
-        throw std::runtime_error("Decoded audio would exceed the web editor's shared 128 MiB budget for audio (including effects, clipboard and undo history). Use a shorter recording or ColdEdit for Windows (download above the editor).");
+    const auto limit = audioLimit.load();
+    if (bytes > limit - std::min(others, limit))
+        throw AudioBudgetExceeded(bytes > owned ? bytes - owned : 0);
 }
 // One reservation per storage allocation, shared by every timeline referencing it.
 struct AudioReservation {
@@ -24,8 +38,9 @@ struct AudioReservation {
     void resize(std::uint64_t next) {
         auto used = audioBytes.load();
         do {
-            if (next > audioLimit - std::min(used - bytes, audioLimit))
-                throw std::runtime_error("Decoded audio would exceed the web editor's shared 128 MiB budget for audio (including effects, clipboard and undo history). Use a shorter recording or ColdEdit for Windows (download above the editor).");
+            const auto limit = audioLimit.load();
+            if (next > limit - std::min(used - bytes, limit))
+                throw AudioBudgetExceeded(next > bytes ? next - bytes : 0);
         } while (!audioBytes.compare_exchange_weak(used, used - bytes + next));
         bytes = next;
     }

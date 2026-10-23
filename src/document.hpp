@@ -50,15 +50,18 @@ public:
     bool redo();
     bool canUndo() const { return historyIndex_ > 0; }
     bool canRedo() const { return historyIndex_ + 1 < history_.size(); }
-    bool dirty() const { return current_ && current_ != saved_; }
+    bool dirty() const { return current_ && current_ != saved_.lock(); }
     void markSaved() { saved_ = current_; }
     std::shared_ptr<const Timeline> timeline() const { return current_; }
     std::string undoLabel() const;
     std::string redoLabel() const;
     std::size_t historySize() const { return history_.size(); }
+    void clearHistory();
+    std::uint64_t reclaimableAudioBytes(const std::vector<Piece>& retained = {}) const;
 private:
     struct State { std::shared_ptr<const Timeline> timeline; std::string label; };
-    std::shared_ptr<const Timeline> current_, saved_;
+    std::shared_ptr<const Timeline> current_;
+    std::weak_ptr<const Timeline> saved_;
     std::vector<State> history_;
     std::size_t historyIndex_ = 0;
     void commit(std::shared_ptr<Timeline> timeline, std::string label);

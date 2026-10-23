@@ -9,13 +9,13 @@ hardware. Raw reports are in `artifacts/`.
 | Measurement | Observed |
 | --- | ---: |
 | Input | 256 MiB, stereo 16-bit, 48 kHz, 23.30 minutes |
-| Map and parse | 0.43 ms |
-| Build all peak levels | 870 ms |
+| Map and parse | 0.29 ms |
+| Map, parse and build all peak levels | 1,181 ms |
 | Peak cache, including stereo sum/difference | 8.53 MiB |
 | Process private memory before open | 0.48 MiB |
-| Process private memory after peaks and 128 edits | 12.15 MiB |
-| 1,600-column stereo waveform query, median | 0.13 ms |
-| Same query, p95 | 1.64 ms |
+| Process private memory after peaks and 128 edits | 12.19 MiB |
+| 1,600-column stereo waveform query, median | 2.17 ms |
+| Same query, p95 | 4.63 ms |
 
 The fixture contains periodic impulses and silence. Timings include no disk
 cache flush, so they are not cold-disk throughput measurements. Private memory
@@ -23,10 +23,29 @@ excludes shared/file-backed pages. This is the standalone core process, not the
 OpenGL application. The normal application also holds font atlases, UI buffers,
 audio device resources, and graphics-driver allocations.
 
-This core measurement was rerun after channel tools and cleanup were added;
-see `artifacts/benchmark-cleanup.json`. Sum/difference caches account for the
-additional peak memory and keep mono conversion accurate without rendering PCM.
+This core measurement uses fractional waveform intervals and history recovery;
+see `artifacts/benchmark-waveform-columns.json`. Each pixel includes linearly
+interpolated values at its two sample boundaries and cached extrema of interior
+samples. Partial cache blocks read exact samples. The timeline retains its
+conservative extrema bounds for non-destructive fades and arbitrary channel mixes.
+Sum/difference caches keep mono conversion accurate without rendering PCM.
 The total source peak-cache budget remains 32 MiB.
+
+The main waveform draws one min/max span per physical pixel at every zoom level,
+with a 1.25-physical-pixel stroke, faint antialiased sides and a one-pixel minimum
+vertical extent with antialiased ends. There is
+no crossfade between an envelope and sample lines. The waveform suite checks
+both channels in envelope and close-up views at 100%, 125% and 200% DPI. It also
+reads back intermediate animation frames and verifies constant-signal coverage
+while zooming through the former 1–4 samples/pixel transition. Core tests cover
+impulse continuity, interpolation, DC, silence outside the file and edited stereo
+data against a flat-PCM reference. Rendering uses 32-bit ImGui indices because
+stereo columns can exceed 65,535 vertices at high DPI and WebGL cannot use
+base-vertex draws to split a 16-bit index buffer.
+The memory suite verifies three-minute filter recovery against independently
+calculated exported samples, including clipboard retention and the 128/256 MiB
+preference. Reports and captures are in `artifacts/web-waveform*` and
+`artifacts/web-memory*`.
 
 ## Actual UI smoke runs
 
@@ -37,14 +56,14 @@ logical window size was 1440 x 900 for the explicit scale cases.
 
 | Scale | Framebuffer | Body font | CPU frame median / p95 |
 | --- | --- | --- | --- |
-| 100% | 1440 x 900 | 17 px | 1.59 / 7.03 ms |
-| 150% | 2160 x 1350 | 25 px | 1.87 / 8.77 ms |
-| 200% | 2880 x 1800 | 34 px | 2.12 / 10.62 ms |
+| 100% | 1440 x 900 | 17 px | 2.73 / 6.72 ms |
+| 150% | 2160 x 1350 | 25 px | 2.16 / 7.87 ms |
+| 200% | 2880 x 1800 | 34 px | 2.74 / 7.06 ms |
 
 Timings measure CPU frame construction and GL submission, excluding event waits,
 vsync, and between-frame font/DPI rebuilds. They do not measure GPU completion
-or guarantee a refresh rate. Working sets ranged from approximately 123 to
-172 MiB, including mapped pages and driver resources. All three cases reported
+or guarantee a refresh rate. Working sets ranged from approximately 117 to
+184 MiB, including mapped pages and driver resources. All three cases reported
 zero running-stream underruns; initial buffering after play/seek is excluded.
 
 The native monitor's 200% scale also passed. A live 100% → 150% → 200% → 100%

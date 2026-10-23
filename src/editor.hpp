@@ -35,12 +35,25 @@ private:
     Document document_;
     Playback playback_;
     Viewport view_;
-    std::shared_ptr<AudioFile> source_;
+    // File metadata must not keep obsolete source PCM alive after clearing undo.
+    struct SourceInfo {
+        unsigned sampleRate, bits;
+        bool floating;
+        Frame frames;
+        std::string format;
+        std::weak_ptr<AudioFile> audio;
+        explicit SourceInfo(const std::shared_ptr<AudioFile>& f) : sampleRate(f->sampleRate), bits(f->bits),
+            floating(f->floating), frames(f->frames), format(f->format), audio(f) {}
+        bool peaksReady() const { const auto f = audio.lock(); return !f || f->peaksReady(); }
+        float peakProgress() const { const auto f = audio.lock(); return f ? f->peakProgress() : 1; }
+    };
+    std::unique_ptr<SourceInfo> source_;
     std::filesystem::path sourcePath_, pendingPath_;
     std::vector<Piece> clipboard_;
     unsigned clipboardRate_ = 0, clipboardChannels_ = 0;
     Frame anchor_ = 0, head_ = 0, cursor_ = 0;
     bool selecting_ = false, loop_ = false, follow_ = true, close_ = false;
+    bool fullSelectionAtClick_ = false;
     bool wheelZooms_ = true;
     bool compact_ = false, compactTools_ = false;
     SelectionBoundaryDrag boundaryDrag_;
@@ -75,13 +88,18 @@ private:
     std::atomic<float> jobProgress_{0};
     std::string jobLabel_, jobError_, jobSuccess_;
     std::function<void()> onJobDone_;
+    std::function<void()> onJobRetry_, memoryRetry_;
+    std::uint64_t jobMemoryNeeded_ = 0, memoryNeeded_ = 0;
+    bool syncPlayback_ = false;
     std::mutex jobMutex_;
     char pathInput_[2048]{};
     ImVec2 wavePos_{}, waveSize_{};
     std::vector<Peak> overviewCache_;
     std::vector<Peak> waveformCache_;
+    std::vector<ImVec2> envelopeUpper_, envelopeLower_;
     const Timeline* waveformTimeline_ = nullptr;
     double waveformStart_ = -1, waveformSpan_ = 0;
+    double waveformRasterLeft_ = -1, waveformRasterRight_ = -1;
     int waveformColumns_ = 0;
     bool waveformReady_ = false;
     const Timeline* overviewTimeline_ = nullptr;
@@ -120,7 +138,12 @@ private:
     void previewCleanup();
     void snapSelection(bool movingEdgeOnly = false);
     Frame edgeFrames() const;
-    void startJob(const std::string& label, std::function<void(std::stop_token)> task, std::function<void()> done = {});
+    void startJob(const std::string& label, std::function<void(std::stop_token)> task, std::function<void()> done = {}, std::function<void()> retry = {});
+    std::uint64_t reclaimableAudioBytes() const;
+    std::size_t currentPeakBytes() const;
+#ifdef __EMSCRIPTEN__
+    void audioBudgetSetting();
+#endif
     void shortcuts();
     void header(float width);
     void mainMenu();

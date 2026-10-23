@@ -64,6 +64,17 @@ EM_JS(int, saveBrowserWheelZoom, (bool zoom), {
     try { localStorage.setItem('coldedit.wheelZooms', zoom ? 'true' : 'false'); return 1; }
     catch (_) { return 0; }
 });
+EM_JS(unsigned, loadBrowserAudioBudget, (), {
+    try { return localStorage.getItem('coldedit.audioBudgetMiB') === '256' ? 256 : 128; }
+    catch (_) { return 128; }
+});
+EM_JS(int, saveBrowserAudioBudget, (unsigned mib), {
+    document.getElementById('audio-budget').textContent = String(mib);
+    try { localStorage.setItem('coldedit.audioBudgetMiB', String(mib)); return 1; }
+    catch (_) { return 0; }
+});
+unsigned loadWebAudioBudget() { return loadBrowserAudioBudget(); }
+bool saveWebAudioBudget(unsigned mib) { return saveBrowserAudioBudget(mib) != 0; }
 void webOpenPicker() { browserPicker(); }
 void webClearImport() { browserClearImport(); }
 void webSetDirty(bool dirty) { browserSetDirty(dirty); }

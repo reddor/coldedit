@@ -17,7 +17,8 @@ Choose **ColdEdit > Export format**, then export the file or selection.
 
 Selection dragging, retained ranges after Cut/Delete, Save selection, and
 additive Paste into selection share the native implementation. Mixing uses the
-same 128 MiB shared audio budget as imports and filters, including undo history.
+same shared audio budget as imports and filters, including undo history (128 MiB
+by default, optionally 256 MiB).
 `tests/web-selection.cjs` checks real pointer/keyboard input and every exported
 sample after mixing, plus retained ranges at EOF and recovery after cutting all.
 
@@ -58,7 +59,12 @@ Releases, where Windows and Linux packages are published.
 - The web clipboard is cleared on a successful document open to avoid retaining
   audio from previous files. Undo snapshots share their referenced audio sources.
 - All retained source and effect audio (preview, clipboard, playback, undo/redo)
-  shares a **128 MiB audio storage budget**, checked before allocation. WAV keeps
+  shares a **128 MiB default audio storage budget**, checked before allocation.
+  Choose **ColdEdit > Web audio budget > 256 MiB** for more processing room.
+  The preference is saved per browser origin; unavailable browser storage leaves
+  it active for the session. Lowering the budget is disabled while retained audio
+  exceeds 128 MiB. Input/export limits and the 512 MiB WASM ceiling stay the same.
+  WAV keeps
   its original PCM byte representation; FLAC and MP3 decode to float32 PCM.
   48 kHz stereo float32 consumes about 22 MiB per minute (roughly 5m50s in 128 MiB).
   Imports check declared duration when available and actual output as it grows;
@@ -67,9 +73,22 @@ Releases, where Windows and Linux packages are published.
   reservations and preserve the current document. That document remains counted
   while its replacement is decoding, so opening another large file can exceed
   the shared budget even if either file would fit alone.
-- DC removal and filters render float PCM only for the selected range. Another operation
-  can exceed this budget while earlier results remain in undo history; select
-  a smaller range or use the native app. Normalization, channel tools, fades,
+- DC removal and filters render float PCM only for the selected range. When these
+  operations or additive paste reach the budget, a recovery dialog shows the new
+  allocation and the unique audio storage reclaimable from undo/redo. **Clear undo
+  and retry** is enabled only if that recovery makes the operation fit. It keeps
+  current audio, clipboard, selection, and saved/unsaved status, removes all previous
+  undo/redo states, and retries the same operation. The retry itself can be undone.
+  Cancel keeps history intact. The dialog also allows raising the budget and retrying
+  with history intact. If a later allocation or processing error occurs after clearing,
+  current audio survives but the discarded history cannot be restored.
+  Clipboard and current audio can pin a whole source even if only a small range is
+  used; clearing metadata-only edits may reclaim nothing. A three-minute 44.1 kHz
+  stereo float buffer uses 60.6 MiB: current audio plus a new result fits in 128 MiB
+  after releasing older sources. At 48 kHz those two buffers require 131.8 MiB and
+  need the larger setting or a shorter range. Full-track filters already produce a
+  consolidated source; recovery does not allocate another copy to flatten it.
+  Normalization, channel tools, fades,
   and silence need no rendered audio buffer. Processing remains cancellable;
   preview/bypass/cancel do not alter the document or its saved state.
 - Browser audio uses one owned PCM-byte buffer per source. Known-length FLAC/MP3
@@ -185,6 +204,7 @@ once in a new output directory, then run the isolated server/browser harness:
 build/coldedit_codec_tests.exe --web-fixtures artifacts/codec-fixtures
 node tests/run-web-tests.cjs web-codecs.cjs
 node tests/run-web-tests.cjs web-mp3.cjs
+node tests/run-web-tests.cjs web-memory.cjs web-waveform.cjs
 ```
 
 This covers MP3 gapless import, edited-selection FLAC round trips at both bit
@@ -193,6 +213,10 @@ and an over-limit FLAC stream with no reported sample count.
 The MP3 suite checks all export presets, selection and full-file downloads,
 gapless reimport, decoded signal, 96 -> 48 kHz mono resampling, cancellation,
 and the web output limit.
+The memory suite covers the three-minute filter workflow, exported sample accuracy,
+cancel, undo/redo recovery, clipboard retention, additive paste, both budget settings,
+persistence, and insufficient recovery at 48 kHz. Waveform captures exercise the
+envelope, line transition and sample detail at multiple physical pixel densities.
 
 Browser verification covers 100%, 110%, 125%, 150%, 175%, and 200% DPI, file input, selection
 edges and crossing, zoom, pan, AudioWorklet playback, undo/redo, and downloaded

@@ -1,4 +1,5 @@
 #include "document.hpp"
+#include <unordered_set>
 #include "codecs.hpp"
 #include <algorithm>
 #include <cmath>
@@ -90,32 +91,54 @@ Timeline Timeline::range(Frame first, Frame last) const {
 }
 Peak Timeline::peak(Frame first, Frame last, unsigned c) const noexcept {
     first = std::clamp(first, Frame(0), frames); last = std::clamp(last, first, frames);
-    Peak out{};
+    Peak out{std::numeric_limits<float>::max(), -std::numeric_limits<float>::max()};
     std::size_t i = std::size_t(std::upper_bound(ends.begin(), ends.end(), first) - ends.begin());
     for (; i < pieces.size(); ++i) {
         const Frame start = i ? ends[i - 1] : 0;
         if (start >= last) break;
         const auto& p = pieces[i];
         const Frame a = std::max(first, start) - start, b = std::min(last, ends[i]) - start;
-        if (!p.source || a >= b) continue;
-        if (c >= channels) return out;
+        if (a >= b) continue;
+        if (c >= channels) return {};
+        if (!p.source) { out.lo = std::min(out.lo, 0.f); out.hi = std::max(out.hi, 0.f); continue; }
         const auto mixed = p.source->mixPeak(p.offset + (p.reversed ? p.length - b : a), p.offset + (p.reversed ? p.length - a : b), p.mix[c][0], p.mix[c][1]);
         // Bound each monotonic envelope over this pixel's range. This preserves
         // source peak caching and never hides a transient between the endpoints.
-        double gain = p.gain;
-        for (const auto& fade : p.fades) gain *= std::max(fade.value(a), fade.value(b - 1));
+        double lowGain = 1, highGain = 1;
+        for (const auto& fade : p.fades) {
+            const double x = fade.value(a), y = fade.value(b - 1);
+            lowGain *= std::min(x, y); highGain *= std::max(x, y);
+        }
+        lowGain *= p.gain; highGain *= p.gain;
+        const double values[] = {mixed.lo * lowGain, mixed.lo * highGain, mixed.hi * lowGain, mixed.hi * highGain};
         constexpr double limit = std::numeric_limits<float>::max();
-        Peak v{float(std::clamp(mixed.lo * gain, -limit, limit)), float(std::clamp(mixed.hi * gain, -limit, limit))};
-        if (v.lo > v.hi) std::swap(v.lo, v.hi);
+        Peak v{float(std::clamp(*std::min_element(std::begin(values), std::end(values)), -limit, limit)),
+               float(std::clamp(*std::max_element(std::begin(values), std::end(values)), -limit, limit))};
         out.lo = std::min(out.lo, v.lo); out.hi = std::max(out.hi, v.hi);
     }
-    return out;
+    return out.lo <= out.hi ? out : Peak{};
 }
 void Document::open(std::shared_ptr<AudioFile> file) {
     auto t = std::make_shared<Timeline>();
     t->sampleRate = file->sampleRate; t->channels = file->channels;
     t->pieces.push_back({file, 0, file->frames}); t->rebuild();
-    current_ = saved_ = t; history_ = {{t, "Open"}}; historyIndex_ = 0;
+    current_ = t; saved_ = t; history_ = {{t, "Open"}}; historyIndex_ = 0;
+}
+void Document::clearHistory() {
+    // Keep the exact current revision, so both dirty and clean documents stay so.
+    std::vector<State> baseline;
+    if (current_) baseline.push_back({current_, "Current audio"});
+    history_.swap(baseline); historyIndex_ = 0;
+}
+std::uint64_t Document::reclaimableAudioBytes(const std::vector<Piece>& retained) const {
+    std::unordered_set<const AudioFile*> live, counted;
+    const auto keep = [&](const std::vector<Piece>& pieces) { for (const auto& p : pieces) if (p.source) live.insert(p.source.get()); };
+    if (current_) keep(current_->pieces);
+    keep(retained);
+    std::uint64_t bytes = 0;
+    for (const auto& state : history_) for (const auto& p : state.timeline->pieces)
+        if (p.source && !live.contains(p.source.get()) && counted.insert(p.source.get()).second) bytes += p.source->storageBytes();
+    return bytes;
 }
 void Document::commit(std::shared_ptr<Timeline> t, std::string label) {
     t->rebuild();

@@ -100,6 +100,13 @@ AudioFile::~AudioFile() {
     if (!temporaryDirectory_.empty()) { std::error_code ec; std::filesystem::remove(temporaryDirectory_ / "audio.wav", ec); std::filesystem::remove(temporaryDirectory_, ec); }
 }
 std::uint64_t AudioFile::processedBytes() { return renderedBytes.load(); }
+std::uint64_t AudioFile::storageBytes() const {
+#ifdef __EMSCRIPTEN__
+    return mapping_ ? mapping_->reservation.bytes : 0;
+#else
+    return mapping_ ? mapping_->size : 0;
+#endif
+}
 std::uint64_t AudioFile::audioBytes() {
 #ifdef __EMSCRIPTEN__
     return web::audioBytes.load();
@@ -311,7 +318,7 @@ void AudioFile::buildPeaks(std::stop_token stop) {
         for (Frame f = 0; f < frames; f += stride) {
             if (stop.stop_requested()) return;
             for (unsigned c = 0; c < cacheChannels; ++c) {
-                float lo = 0, hi = 0;
+                float lo = std::numeric_limits<float>::max(), hi = -lo;
                 for (Frame j = f; j < std::min(f + stride, frames); ++j) { float v = peakSample(j, c); lo = std::min(lo, v); hi = std::max(hi, v); }
                 base.values[std::size_t(f / stride) * cacheChannels + c] = {lo, hi};
             }
@@ -325,7 +332,7 @@ void AudioFile::buildPeaks(std::stop_token stop) {
             Level next{prev.stride * 16, {}};
             next.values.resize(((blocks + 15) / 16) * cacheChannels);
             for (std::size_t b = 0; b < blocks; b += 16) for (unsigned c = 0; c < cacheChannels; ++c) {
-                PackedPeak p{0, 0};
+                PackedPeak p{std::numeric_limits<float>::max(), -std::numeric_limits<float>::max()};
                 for (std::size_t j = b; j < std::min(b + 16, blocks); ++j) { const auto v = prev.values[j * cacheChannels + c]; p.lo = std::min(p.lo, v.lo); p.hi = std::max(p.hi, v.hi); }
                 next.values[(b / 16) * cacheChannels + c] = p;
             }
@@ -363,19 +370,28 @@ Peak AudioFile::mixPeak(Frame first, Frame last, double left, double right) cons
 }
 Peak AudioFile::cachedPeak(Frame first, Frame last, unsigned c) const noexcept {
     first = std::clamp(first, Frame(0), frames); last = std::clamp(last, first, frames);
-    Peak result{};
-    if (c >= peakChannels() || first == last) return result;
-    if (peaksReady() && !levels_.empty() && last - first >= levels_.front().stride) {
-        const Level* level = &levels_.front();
-        for (const auto& l : levels_) { if (l.stride > last - first) break; level = &l; }
-        for (Frame b = first / level->stride; b <= (last - 1) / level->stride; ++b) {
-            const auto p = level->values[std::size_t(b) * peakChannels() + c];
-            result.lo = std::min(result.lo, p.lo); result.hi = std::max(result.hi, p.hi);
-        }
-    } else if (last - first <= 4096) {
-        for (Frame f = first; f < last; ++f) { float v = peakSample(f, c); result.lo = std::min(result.lo, v); result.hi = std::max(result.hi, v); }
-    }
+    if (c >= peakChannels() || first == last) return {};
+    const bool cached = peaksReady() && !levels_.empty();
     // Never scan an entire large file on the UI thread while peaks are building.
+    if (!cached && last - first > 4096) return {};
+    Peak result{std::numeric_limits<float>::max(), -std::numeric_limits<float>::max()};
+    for (Frame f = first; f < last;) {
+        const Level* block = nullptr;
+        if (cached) for (auto it = levels_.rbegin(); it != levels_.rend(); ++it) {
+            if (it->stride <= last - f && f % it->stride == 0) { block = &*it; break; }
+        }
+        if (block) {
+            const auto p = block->values[std::size_t(f / block->stride) * peakChannels() + c];
+            result.lo = std::min(result.lo, p.lo); result.hi = std::max(result.hi, p.hi);
+            f += block->stride;
+        } else {
+            // Scan only the partial base blocks at the interval boundaries.
+            const Frame end = cached ? std::min(last, f + levels_.front().stride - f % levels_.front().stride) : last;
+            for (; f < end; ++f) {
+                const float v = peakSample(f, c); result.lo = std::min(result.lo, v); result.hi = std::max(result.hi, v);
+            }
+        }
+    }
     return result;
 }
 }

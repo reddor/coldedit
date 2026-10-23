@@ -18,6 +18,16 @@ async function exportAudio(p,path,expected,total,trigger){const before=await dia
   try{
    await p.goto(process.env.COLDEDIT_WEB_URL||'http://localhost:8080/');await p.waitForFunction(()=>document.querySelector('#loading').hidden);
    await p.locator('#file-input').setInputFiles({name:'selection.wav',mimeType:'audio/wav',buffer:fixture()});await p.waitForFunction(()=>coldeditWeb.diagnostics().frames===48000);
+   // Double-click toggles full selection, including after Ctrl+A and at a handle
+   // or on the ruler where the first click can already change the range.
+   const doubleClick=async(x,y=350)=>{await p.mouse.dblclick(x,y,{delay:50});await tick(p);};
+   const cleared=async()=>{const d=await diag(p);assert.equal(length(d),0,'full selection clears');assert.equal(d.position,d.selection_start,'playhead follows the clearing click');assert.equal(d.history_states,1);assert.equal(d.dirty,false);};
+   await doubleClick(500);assert.deepEqual(range(await diag(p)),[0,frames]);
+   await doubleClick(600);await cleared();
+   await key(p,'Control+a');await doubleClick(700);await cleared();
+   await drag(p,650,300);await doubleClick(450);assert.deepEqual(range(await diag(p)),[0,frames]);
+   await doubleClick(72);await cleared();
+   await key(p,'Control+a');await doubleClick(550,140);await cleared();
    await drag(p,300,650);const original=await diag(p);
    await exportAudio(p,`artifacts/web-save-selection-menu-${scale}.wav`,(f,c)=>sample(original.selection_start+f,c),length(original),async()=>{await key(p,'F10');await key(p,'Home');await key(p,'ArrowDown');await key(p,'ArrowDown');await key(p,'Enter');});
    await drag(p,475,575);let moved=await diag(p);assert.equal(length(moved),length(original));assert(moved.selection_start>original.selection_start);assert.equal(moved.history_states,1);assert.equal(moved.dirty,false);assert.equal(moved.position,original.position);
@@ -51,7 +61,7 @@ async function exportAudio(p,path,expected,total,trigger){const before=await dia
    await key(p,'Escape');await key(p,'f');await p.waitForFunction(()=>Math.abs(coldeditWeb.diagnostics().view_span-48000)<.01);await drag(p,300,650);
    const saved=await diag(p);
    await exportAudio(p,`artifacts/web-save-selection-context-${scale}.wav`,(f,c)=>sample(saved.selection_start+f,c),length(saved),async()=>{await p.mouse.click(500,350,{button:'right',delay:40});await tick(p);await p.screenshot({path:`artifacts/web-selection-${scale}.png`});await key(p,'Home');for(let i=0;i<4;i++)await key(p,'ArrowDown');await key(p,'Enter');});
-   assert.deepEqual(errors,[]);assert.equal((await diag(p)).error,'');reports.push({scale,passed:true,diagnostics:await diag(p)});console.log(`PASS selection ${scale}x: range drag, Alt-drag, Save selection WAV via menu/inspector/context, retained cut, mix samples/history, replacement, EOF and cut-all recovery`);
+   assert.deepEqual(errors,[]);assert.equal((await diag(p)).error,'');reports.push({scale,passed:true,diagnostics:await diag(p)});console.log(`PASS selection ${scale}x: double-click toggle, range drag, Alt-drag, Save selection WAV via menu/inspector/context, retained cut, mix samples/history, replacement, EOF and cut-all recovery`);
   }catch(e){await p.screenshot({path:`artifacts/web-selection-failure-${scale}.png`});throw e;}finally{await context.close();}
  }}finally{await browser.close();fs.writeFileSync('artifacts/web-selection.json',JSON.stringify(reports,null,2));}
 })().catch(e=>{console.error(e);process.exitCode=1;});

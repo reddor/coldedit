@@ -23,6 +23,7 @@ public:
         const std::function<void(Frame, Frame, float*)>& fill, std::atomic<float>* progress, std::stop_token stop);
     static std::uint64_t processedBytes();
     static std::uint64_t audioBytes();
+    std::uint64_t storageBytes() const;
     ~AudioFile();
     AudioFile(const AudioFile&) = delete;
     AudioFile& operator=(const AudioFile&) = delete;

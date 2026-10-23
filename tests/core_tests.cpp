@@ -1,6 +1,7 @@
 #include "document.hpp"
 #include "processing.hpp"
 #include "viewport.hpp"
+#include "waveform.hpp"
 #include "interaction.hpp"
 #include "web_limits.hpp"
 #include <algorithm>
@@ -81,10 +82,91 @@ static void peakTests() {
     auto s = AudioFile::open(fixture("peaks.wav", 32, 1, true, samples)); s->waitForPeaks();
     auto p = s->peak(0, 257, 0); CHECK(p.lo <= -.9f && p.hi >= .8f);
     p = s->peak(32760, 33020, 0); CHECK(p.hi >= .99f); CHECK(s->peakBytes() < samples.size() / 20);
-    p = s->peak(255, 256, 0); near(p.lo, -.9f); near(p.hi, 0);
+    p = s->peak(255, 256, 0); near(p.lo, -.9f); near(p.hi, -.9f);
+    // Cached intervals must exclude impulses immediately outside either edge,
+    // including at the 256 -> 4096 -> 65536 cache-level boundaries.
+    std::mt19937 random(73);
+    for (int i = 0; i < 500; ++i) {
+        const Frame a = random() % 65536, b = std::min<Frame>(65536, a + 1 + random() % 17000);
+        const auto exact = std::minmax_element(samples.begin() + a, samples.begin() + b);
+        p = s->peak(a, b, 0); near(p.lo, *exact.first); near(p.hi, *exact.second);
+    }
+    for (Frame end : {255, 256, 4095, 4096, 32768, 65535}) {
+        p = s->peak(257, std::max<Frame>(258, end), 0);
+        near(p.lo, 0); near(p.hi, end > 32768 ? .99f : 0);
+    }
     Document d; d.open(s); d.effect(0, s->frames, Effect::Reverse);
     p = d.timeline()->peak(s->frames - 257, s->frames, 0); CHECK(p.lo <= -.9f && p.hi >= .8f);
     d.effect(0, s->frames, Effect::Gain, -.5f); p = d.timeline()->peak(0, s->frames, 0); CHECK(p.lo < -.49f && p.hi > .44f);
+}
+static void waveformTests() {
+    auto impulse = AudioFile::open(fixture("waveform-impulse.wav", 32, 1, true, {0, 0, 1, 0, 0}));
+    impulse->waitForPeaks();
+    Document doc; doc.open(impulse);
+    auto peak = [&](double a, double b) { return waveformPeak(*doc.timeline(), a, b, 0); };
+    // Moving a pixel edge past an impulse must approach it continuously, not
+    // jump from zero to the full peak as integer floor/ceil queries would.
+    near(peak(.4999, 1.9999).hi, .9999f);
+    near(peak(.5001, 2.0001).hi, 1.f);
+    near(peak(1.9999, 3.4999).hi, 1.f);
+    near(peak(2.0001, 3.5001).hi, .9999f);
+    near(peak(1.25, 1.75).lo, .25f); near(peak(1.25, 1.75).hi, .75f);
+    near(peak(1.5, 1.5).lo, .5f); near(peak(1.5, 1.5).hi, .5f);
+    near(peak(-8, -2).hi, 0); near(peak(6, 8).lo, 0);
+
+    auto dc = AudioFile::open(fixture("waveform-dc.wav", 32, 1, true, {.4f, .4f, .4f}));
+    dc->waitForPeaks(); doc.open(dc);
+    near(peak(.2, .3).lo, .4f); near(peak(.2, .3).hi, .4f); // No integer sample in this pixel.
+    near(peak(0, 2).lo, .4f); near(peak(0, 2).hi, .4f); // Do not add a zero baseline.
+    near(peak(2.25, 2.75).lo, .1f); near(peak(2.25, 2.75).hi, .3f);
+    near(peak(2.75, 5).lo, 0); near(peak(2.75, 5).hi, .1f);
+
+    // Compare against an independent flat-PCM oracle, including cache-block
+    // boundaries, stereo, edits, empty pixels, and samples outside the file.
+    std::vector<float> samples(10000 * 2);
+    for (std::size_t i = 0; i < samples.size(); ++i) samples[i] = float(std::sin(i * .17) * .7 + std::cos(i * .031) * .2);
+    auto source = AudioFile::open(fixture("waveform-stereo.wav", 32, 2, true, samples));
+    source->waitForPeaks(); doc.open(source);
+    doc.effect(253, 4101, Effect::Reverse); doc.effect(251, 4099, Effect::Gain, -.7f);
+    doc.insertSilence(4090, 17); doc.channelTool(ChannelTool::Swap, 2000, 4500);
+    const auto timeline = doc.timeline();
+    std::vector<float> flat(std::size_t(timeline->frames) * 2);
+    for (Frame i = 0; i < timeline->frames; ++i) for (unsigned c = 0; c < 2; ++c) flat[std::size_t(i) * 2 + c] = timeline->sample(i, c);
+    const auto value = [&](Frame i, unsigned c) { return i < 0 || i >= timeline->frames ? 0.f : flat[std::size_t(i) * 2 + c]; };
+    const auto reference = [&](double a, double b, unsigned c) {
+        Peak out{std::numeric_limits<float>::max(), -std::numeric_limits<float>::max()};
+        // Intersect every line segment with the pixel and inspect its ends.
+        for (Frame i = Frame(std::floor(a)); i <= Frame(std::floor(b)); ++i) {
+            const double left = std::max(a, double(i)), right = std::min(b, double(i + 1));
+            for (double f : {left, right}) {
+                const float v = float((1 - (f - i)) * value(i, c) + (f - i) * value(i + 1, c));
+                out.lo = std::min(out.lo, v); out.hi = std::max(out.hi, v);
+            }
+        }
+        return out;
+    };
+    std::mt19937 random(821);
+    for (int i = 0; i < 500; ++i) {
+        const double a = double(random() % 1003000) / 100 - 10;
+        const double b = a + (i % 2 ? double(random() % 100) / 100 : random() % 5000);
+        for (unsigned c = 0; c < 2; ++c) {
+            const auto actual = waveformPeak(*timeline, a, b, c), expected = reference(a, b, c);
+            near(actual.lo, expected.lo); near(actual.hi, expected.hi);
+        }
+    }
+    // Small viewport movements around sample boundaries, across the old 1/4
+    // samples-per-pixel transitions and several physical-pixel densities.
+    for (double dpi : {1., 1.25, 2.}) for (double span : {700., 1399., 1400., 1401., 5599., 5600., 5601.}) {
+        const double step = span / (1400 * dpi);
+        for (double a : {254., 255., 256., 4095., 4096.}) {
+            const auto before = waveformPeak(*timeline, a - .0001, a + step - .0001, 0);
+            const auto after = waveformPeak(*timeline, a + .0001, a + step + .0001, 0);
+            // All PCM values lie in [-1,1], so linear segments have slope <=2.
+            CHECK(std::abs(before.lo - after.lo) < .00041f);
+            CHECK(std::abs(before.hi - after.hi) < .00041f);
+        }
+    }
+    Timeline empty; near(waveformPeak(empty, 0, 1, 0).hi, 0);
 }
 static void documentTests() {
     std::vector<float> original; for (int i = 0; i < 64; ++i) original.push_back(float(i - 32) / 64);
@@ -208,7 +290,7 @@ static void cleanupTests() {
         CHECK(d.undo()); CHECK(d.timeline() == before); CHECK(d.redo()); CHECK(d.timeline() == after);
     }
     d.open(source); d.channelTool(ChannelTool::Mono, 0, 0);
-    auto monoPeak = d.timeline()->peak(0, 48000, 0); near(monoPeak.hi, .05f); near(monoPeak.lo, 0);
+    auto monoPeak = d.timeline()->peak(0, 48000, 0); near(monoPeak.hi, .05f); near(monoPeak.lo, .05f);
     auto monoPath = root / "mixed-mono.wav"; exportWav(*d.timeline(), monoPath, ExportFormat::Float32);
     auto mono = AudioFile::open(monoPath); CHECK(mono->channels == 1); near(mono->sample(100, 0), .05f);
     auto dc = processAudio(*original, 1000, 47000, {Cleanup::RemoveDC, 0});
@@ -307,6 +389,38 @@ static void exportTests() {
     Timeline huge; huge.channels = 2; huge.frames = Frame(UINT32_MAX); throws([&] { exportWav(huge, root / "huge.wav", ExportFormat::Float32); });
     huge.frames = std::numeric_limits<Frame>::max(); throws([&] { exportWav(huge, root / "huge.wav", ExportFormat::Float32); });
 }
+static void memoryRecoveryTests() {
+    auto source = AudioFile::open(fixture("recovery.wav", 16, 2, false, std::vector<float>(9600, .2f)));
+    Document d; d.open(source); d.clearHistory(); CHECK(!d.dirty());
+    d.effect(0, source->frames, Effect::Gain, .5f);
+    CHECK(d.reclaimableAudioBytes() == 0); // Metadata edits share the original allocation.
+    const auto bytes = source->storageBytes();
+    std::weak_ptr<AudioFile> retired = source;
+    auto clipboard = d.timeline()->pieces;
+    auto filtered = processAudio(*d.timeline(), 0, source->frames, {Cleanup::LowPass, 1000});
+    d.apply(filtered, "Filter"); filtered.reset(); source.reset();
+    CHECK(d.reclaimableAudioBytes() == bytes); CHECK(d.reclaimableAudioBytes(clipboard) == 0);
+    const auto before = d.timeline(); d.clearHistory();
+    CHECK(d.timeline() == before); CHECK(d.dirty()); CHECK(!d.canUndo()); CHECK(!d.canRedo());
+    CHECK(!retired.expired()); clipboard.clear(); CHECK(retired.expired()); // Saved state must not pin PCM.
+    d.markSaved(); d.effect(0, 4800, Effect::Gain, .5f); CHECK(d.undo()); CHECK(!d.dirty());
+    d.clearHistory(); CHECK(!d.dirty()); CHECK(!d.canRedo());
+    d.effect(0, 4800, Effect::Reverse); CHECK(d.dirty()); CHECK(d.undo()); CHECK(!d.dirty());
+    // Budget boundaries and lowering guard, without allocating hundreds of MiB.
+    CHECK(web::audioLimit.load() == web::defaultAudioLimit);
+    {
+        web::AudioReservation held; held.resize(web::defaultAudioLimit);
+        throws([] { web::checkAudio(1); });
+        CHECK(web::setAudioLimit(web::extendedAudioLimit));
+        web::checkAudio(web::defaultAudioLimit);
+        held.resize(web::defaultAudioLimit + 1);
+        CHECK(!web::setAudioLimit(web::defaultAudioLimit));
+        CHECK(!web::setAudioLimit(512ull * 1024 * 1024));
+        try { web::checkAudio(web::defaultAudioLimit); CHECK(false); }
+        catch (const web::AudioBudgetExceeded& e) { CHECK(e.additionalBytes == web::defaultAudioLimit); CHECK(std::string(e.what()).find("256 MiB") != std::string::npos); }
+    }
+    CHECK(web::audioBytes.load() == 0); CHECK(web::setAudioLimit(web::defaultAudioLimit));
+}
 static void viewportTests() {
     Viewport v; v.fit(1e10); v.show(1e8, 1e6, true); double anchor = v.start + v.span * .37;
     v.zoom(.5, .37);
@@ -358,7 +472,7 @@ int main() {
     root = std::filesystem::current_path() / ("coldedit-tests-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::create_directories(root);
     try {
-        parserTests(); peakTests(); documentTests(); fadeAndSilenceTests(); cleanupTests(); mixTests(); exportTests(); viewportTests(); interactionTests();
+        parserTests(); peakTests(); waveformTests(); documentTests(); fadeAndSilenceTests(); cleanupTests(); mixTests(); exportTests(); memoryRecoveryTests(); viewportTests(); interactionTests();
         web::checkInput(web::inputLimit); ++checks;
         throws([] { web::checkInput(web::inputLimit + 1); });
         for (unsigned bits : {16u, 24u, 32u}) for (unsigned channels : {1u, 2u}) {

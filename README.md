@@ -24,7 +24,7 @@ The editor starts empty until you open your audio.
 
 A WebAssembly build is also available in `dist/Web` and `dist/ColdEdit-web.zip`.
 It runs locally in your browser, with a **64 MiB input limit** and a
-**128 MiB shared audio memory budget** and **128 MiB export limit**, and links to GitHub Releases for native downloads for
+**128 MiB default shared audio budget** (optionally 256 MiB) and **128 MiB export limit**, and links to GitHub Releases for native downloads for
 larger recordings. See [WEB.md](WEB.md) for running, building, hosting, and
 browser-specific memory behavior. Smaller screens use a compact toolbar and a
 **Tools** panel, with touch selection and zoom buttons.
@@ -123,7 +123,8 @@ above full scale can clip in playback or integer WAV export. Normalize if needed
 | Drag inside selection | Move range, preserving its length and the audio |
 | Alt-drag | Draw a new range, even inside a selection |
 | Drag selection edge or ruler handle | Adjust start or end; drag beyond view to autoscroll |
-| Double-click / Ctrl+A | Select all |
+| Double-click | Select all / clear full selection |
+| Ctrl+A | Select all |
 | Space | Play / pause |
 | L | Toggle loop |
 | F / Z | Fit file / zoom to selection |
@@ -253,11 +254,14 @@ peaks so channel cancellation is represented correctly after mono conversion.
 Float extrema preserve float-WAV headroom.
 The base stride increases for large sources to keep the cache below 32 MiB per
 source. Typical 16-bit stereo audio uses about 3.33% of its file size for peaks
-(mono about 1.67%). Coarse
-queries include overlapping edge blocks, so overview extrema are conservative;
-fine zoom reads exact samples. No full-file scan runs on the drawing thread.
+(mono about 1.67%). Queries combine cache blocks wholly inside each interval
+and scan the partial base blocks at its edges, keeping neighboring transients
+out of the result. No full-file scan runs on the drawing thread.
 Visible waveform columns are cached until the view, edit state, resolution,
 or peak availability changes, so dragging a selection reuses their extrema.
+An antialiased connected envelope replaces hard pixel columns, including in the
+navigator. Between one and four samples per physical pixel it blends into the
+sample line. Extrema retain their actual sign instead of always extending to zero.
 
 The timeline is a piece table. A piece references a source range, direction,
 gain, and compact fade envelopes; silence has no sample storage. Fade envelopes
@@ -274,9 +278,13 @@ it read-only; it does not allocate a full decoded recording in RAM. Temporary
 files are released when no preview, clipboard, playback, or undo state needs
 them. Undo retains the original samples; a process crash may leave temporary
 files in the system temporary directory. The browser uses an enforced shared
-128 MiB budget for imported PCM and rendered effects, including previews and
-history. See WEB.md for allocations outside this audio-storage budget.
-See WEB.md for the resulting limit on large/repeated processing operations.
+128 MiB default budget for imported PCM and rendered effects, including previews
+and history. **ColdEdit > Web audio budget** offers a persistent 256 MiB option.
+When a filter, DC removal, or additive paste reaches the budget, a recovery dialog
+shows how much clearing undo/redo can release and offers **Clear undo and retry**
+when that would fit. Current audio, clipboard, selection and saved/unsaved status
+are preserved; the retried edit starts a new undo history. See WEB.md for details
+and allocations outside this audio-storage budget.
 
 Zero-crossing snapping is optional and defaults off. Mono picks the nearest
 crossing within 5 ms; stereo picks the quietest nearby crossing across both

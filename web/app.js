@@ -42,6 +42,7 @@ window.coldeditWeb = {
   },
   ready() {
     started = true; inputLimit = Module._coldedit_input_limit(); exportLimit = Module._coldedit_export_limit();
+    document.getElementById('audio-budget').textContent = String(Module._coldedit_audio_limit() / (1024 * 1024));
     loading.hidden = true; canvas.focus();
   },
   fail(message) { started = false; loading.hidden = false; loadingText.textContent = message; },

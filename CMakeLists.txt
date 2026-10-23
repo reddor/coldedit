@@ -81,6 +81,9 @@ if(COLDEDIT_BUILD_APP)
     ${coldedit_glfw_backend}
     ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
   target_include_directories(coldedit_imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+  # Stereo pixel columns with antialiased ends can exceed 64K vertices at high
+  # DPI. WebGL lacks base-vertex draws; use 32-bit indices on both targets.
+  target_compile_definitions(coldedit_imgui PUBLIC "ImDrawIdx=unsigned int")
   if(EMSCRIPTEN)
     target_compile_definitions(coldedit_imgui PUBLIC IMGUI_IMPL_OPENGL_ES3)
   else()

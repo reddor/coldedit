@@ -15,6 +15,7 @@ public:
     bool available() const { return available_; }
     const std::string& error() const { return error_; }
     void setTimeline(std::shared_ptr<const Timeline> timeline, Frame position = 0);
+    bool waitForTimeline(std::stop_token stop);
     void play(Frame position, Frame loopStart, Frame loopEnd, bool loop);
     void pause();
     void seek(Frame position);
@@ -47,6 +48,7 @@ private:
     std::shared_ptr<const Timeline> timeline_;
     Frame requestedPosition_ = 0, loopStart_ = 0, loopEnd_ = 0;
     bool loop_ = false;
+    std::uint64_t adoptedGeneration_ = 0; // protected by commandMutex_
     std::jthread worker_;
     void produce(std::stop_token stop);
 };

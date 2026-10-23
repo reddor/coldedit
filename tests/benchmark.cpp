@@ -1,4 +1,5 @@
 #include "document.hpp"
+#include "waveform.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -47,7 +48,7 @@ int main() {
             const double left = (source->frames - span) * ((view % 31) / 31.);
             const auto now = Clock::now();
             for (int x = 0; x < 1600; ++x) for (unsigned c = 0; c < 2; ++c) {
-                const auto p = doc.timeline()->peak(Frame(left + span * x / 1600), Frame(std::ceil(left + span * (x + 1) / 1600)), c); checksum += p.hi;
+                const auto p = waveformPeak(*doc.timeline(), left + span * x / 1600, left + span * (x + 1) / 1600, c); checksum += p.hi;
             }
             timings.push_back(elapsed(now));
         }

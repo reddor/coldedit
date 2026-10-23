@@ -13,6 +13,8 @@ bool loadWheelZoomPreference();
 bool saveWheelZoomPreference(bool zoom);
 void saveFramebuffer(const std::filesystem::path& path, int width, int height);
 #ifdef __EMSCRIPTEN__
+unsigned loadWebAudioBudget();
+bool saveWebAudioBudget(unsigned mib);
 void webOpenPicker();
 bool webDownload(const std::filesystem::path& path);
 void webClearImport();

@@ -62,7 +62,7 @@ async function dismiss(p){await key(p,'Tab');await key(p,'Enter');await p.waitFo
       // Fast rejection using STREAMINFO, then actual-output enforcement with total_samples=0.
       for(const name of ['over-budget.flac','unknown-over-budget.flac']) {
         await open(p,'artifacts/codec-fixtures/'+name);d=await diag(p);
-        assert(d.error.includes('128 MiB'));assert(d.error.includes('Windows'));
+        assert(d.error.includes('128 MiB'));assert(d.error.includes('audio budget'));assert(d.error.includes('native app'));
         assert.equal(d.title,before.title);assert.equal(d.audio_bytes,before.audio_bytes);
         assert.equal(await p.evaluate(()=>Module.FS.readdir('/imports').length),2);
         await p.screenshot({path:'artifacts/codec-'+name+'.png'});await dismiss(p);

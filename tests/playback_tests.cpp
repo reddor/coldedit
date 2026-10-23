@@ -94,7 +94,7 @@ int main() {
             std::weak_ptr<const Timeline> released = held;
             audio.setTimeline(held); audio.play(0, 0, 4800, false); settle(); renderReady(audio, output);
             audio.pause(); held.reset(); audio.setTimeline(doc.timeline());
-            for (int i = 0; i < 100 && !released.expired(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            CHECK(audio.waitForTimeline({}));
             CHECK(released.expired()); // A paused worker must release replaced audio.
         }
         doc = Document{}; source.reset(); std::filesystem::remove_all(root);
