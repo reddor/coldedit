@@ -435,7 +435,7 @@ void Editor::shortcuts() {
 }
 void Editor::header(float width) {
     auto d = drawList();
-    const float headerHeight = compact_ ? 118.f : 64.f;
+    const float headerHeight = compact_ && width < 640 ? 118.f : 64.f;
     d.AddRectFilled({0, 0}, {width, headerHeight}, panel); d.AddLine({0, headerHeight}, {width, headerHeight}, line);
     ImGui::SetCursorPos(px({16, 12}));
     const bool menuOpen = ImGui::IsPopupOpen("Main menu");
@@ -459,7 +459,7 @@ void Editor::header(float width) {
         const auto t = document_.timeline();
         const bool ready = t && !busy_;
         const bool paste = ready && !clipboard_.empty() && clipboardRate_ == t->sampleRate && clipboardChannels_ == t->channels;
-        ImGui::SetCursorPos(px({12, 68}));
+        ImGui::SetCursorPos(px(width >= 640 ? ImVec2{228, 12} : ImVec2{12, 68}));
         if (toolButton("##undo", ToolIcon::Undo, "", "Undo", ready && document_.canUndo())) action("undo");
         ImGui::SameLine(0, px(4));
         if (toolButton("##redo", ToolIcon::Redo, "", "Redo", ready && document_.canRedo())) action("redo");
@@ -1109,14 +1109,15 @@ void Editor::render() {
     compact_ = width < 960 || height < 500;
     header(width);
     if (compact_) {
+        const float top = width >= 640 ? 81.f : 130.f;
         if (compactTools_) {
             ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, px(22));
-            inspector({12, 130}, {width - 24, height - 176});
+            inspector({12, top}, {width - 24, height - top - 46});
             ImGui::PopStyleVar();
         } else {
-            const float canvasHeight = std::max(64.f, height - 238);
-            waveform({12, 130}, {width - 24, canvasHeight});
-            overview({12, 140 + canvasHeight}, {width - 24, 54});
+            const float canvasHeight = std::max(64.f, height - top - 108);
+            waveform({12, top}, {width - 24, canvasHeight});
+            overview({12, top + 10 + canvasHeight}, {width - 24, 54});
         }
     } else {
         const float mainWidth = width - 294, canvasHeight = std::max(180.f, height - 220);

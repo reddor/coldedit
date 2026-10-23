@@ -68,18 +68,10 @@ jobs:
     name: WebAssembly
     runs-on: ubuntu-22.04
     timeout-minutes: 40
-    env:
-      COLDEDIT_BROWSER: chromium
-      COLDEDIT_DPI: '1,1.25,2'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: tests/package-lock.json
       - name: Install Emscripten 4.0.23
         run: |
           git clone https://github.com/emscripten-core/emsdk.git third_party/emsdk
@@ -99,16 +91,6 @@ jobs:
           cmake -S . -B build-core -G Ninja -DCMAKE_BUILD_TYPE=Release -DCOLDEDIT_BUILD_APP=OFF
           cmake --build build-core --target coldedit_codec_tests --parallel 4
           build-core/coldedit_codec_tests --web-fixtures artifacts/codec-fixtures
-      - name: Install browser test dependencies
-        run: |
-          npm ci --prefix tests
-          cd tests
-          npx playwright install --with-deps chromium
-      - name: Browser tests
-        run: >-
-          node tests/run-web-tests.cjs
-          web-smoke.cjs web-lifecycle.cjs web-toolbar.cjs web-wheel.cjs
-          web-features.cjs web-cleanup.cjs web-selection.cjs web-codecs.cjs web-mp3.cjs web-mobile.cjs
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages-web
@@ -116,9 +98,67 @@ jobs:
           if-no-files-found: error
           compression-level: 0
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codec-fixtures
+          path: artifacts/codec-fixtures/
+          if-no-files-found: error
+
+  web-tests:
+    name: Web tests (${{ matrix.suite }})
+    needs: web
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: lifecycle
+            tests: web-smoke.cjs web-lifecycle.cjs
+          - suite: controls
+            tests: web-toolbar.cjs web-wheel.cjs
+          - suite: editing
+            tests: web-features.cjs web-selection.cjs
+          - suite: cleanup
+            tests: web-cleanup.cjs
+          - suite: codecs
+            tests: web-codecs.cjs web-mp3.cjs
+          - suite: mobile
+            tests: web-mobile.cjs
+    env:
+      COLDEDIT_BROWSER: chromium
+      COLDEDIT_DPI: '1,1.25,2'
+      BROWSER_TESTS: ${{ matrix.tests }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tests/package-lock.json
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages-web
+          path: dist
+      - name: Extract the web package under test
+        run: unzip -q dist/ColdEdit-web.zip -d build-web/site
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: matrix.suite == 'codecs'
+        with:
+          name: codec-fixtures
+          path: artifacts/codec-fixtures
+      - name: Install browser test dependencies
+        run: |
+          npm ci --prefix tests
+          cd tests
+          npx playwright install --with-deps chromium
+      - name: Browser tests
+        run: node tests/run-web-tests.cjs $BROWSER_TESTS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: diagnostics-web
+          name: diagnostics-web-${{ matrix.suite }}
           path: |
             artifacts/*.json
             artifacts/*.png
@@ -126,7 +166,7 @@ jobs:
   release:
     name: Publish GitHub release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, linux, web]
+    needs: [windows, linux, web-tests]
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:

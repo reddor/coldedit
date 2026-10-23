@@ -91,7 +91,8 @@ Releases, where Windows and Linux packages are published.
   additional edits; drag on the waveform to select, use **+ / -** to zoom, and
   drag the navigator to pan. The Tools panel has a wide draggable scrollbar.
   The layout fits portrait and landscape screens down to 320 CSS pixels wide;
-  dialogs wrap to the available width. Browser memory limits still apply.
+  dialogs wrap to the available width. At 640 pixels and above, playback and
+  edit controls share a single row. Browser memory limits still apply.
 
 ## High DPI and browser zoom
 

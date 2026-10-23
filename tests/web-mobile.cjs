@@ -42,15 +42,16 @@ async function surface(p, width, height) {
       await p.touchscreen.tap(110,154);
       await (await chooser).setFiles({name:'mobile.wav',mimeType:'audio/wav',buffer:fixture()});
       await p.waitForFunction(() => coldeditWeb.diagnostics().peak_bytes > 0);
-      const cdp = await context.newCDPSession(p), y = Math.min(height - 145,230);
+      const singleRow = width >= 640, toolbarX = singleRow ? 228 : 12, toolbarY = singleRow ? 78 : 134;
+      const cdp = await context.newCDPSession(p), y = Math.min(height - 145,singleRow ? 190 : 230);
       const touch = (type,x) => cdp.send('Input.dispatchTouchEvent',{type,touchPoints:type === 'touchEnd' ? [] : [{x,y,id:1,radiusX:2,radiusY:2,force:1}]});
       await touch('touchStart',100); await tick(p);
       for (let i = 1; i <= 12; ++i) { await touch('touchMove',100 + (width - 160) * i / 12); await tick(p); }
       await touch('touchEnd'); await tick(p);
       let d = await diag(p); assert(d.selection_end > d.selection_start,'touch drag selects audio');
-      await p.touchscreen.tap(130,134); await tick(p); assert((await diag(p)).frames < 192000,'touch Cut edits selection');
-      await p.touchscreen.tap(34,134); await tick(p); assert.equal((await diag(p)).frames,192000,'touch Undo restores audio');
-      await p.touchscreen.tap(274,134); await tick(p); assert((await diag(p)).view_target_span < 192000,'touch zoom button works');
+      await p.touchscreen.tap(toolbarX + 118,toolbarY); await tick(p); assert((await diag(p)).frames < 192000,'touch Cut edits selection');
+      await p.touchscreen.tap(toolbarX + 22,toolbarY); await tick(p); assert.equal((await diag(p)).frames,192000,'touch Undo restores audio');
+      await p.touchscreen.tap(toolbarX + 262,toolbarY); await tick(p); assert((await diag(p)).view_target_span < 192000,'touch zoom button works');
       await p.screenshot({path:`artifacts/mobile-editor-${width}.png`});
       await p.touchscreen.tap(width - 48,76); await tick(p); assert.equal((await diag(p)).tools_open,true);
       await p.screenshot({path:`artifacts/mobile-tools-${width}.png`});
