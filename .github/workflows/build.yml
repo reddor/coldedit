@@ -126,7 +126,7 @@ jobs:
           ${{ fromJSON((startsWith(github.ref, 'refs/tags/v') || inputs.full_tests == true)
             && '[{"suite":"lifecycle","tests":"web-smoke.cjs web-lifecycle.cjs"},
                  {"suite":"controls","tests":"web-toolbar.cjs web-wheel.cjs web-follow.cjs"},
-                 {"suite":"editing","tests":"web-features.cjs web-selection.cjs"},
+                 {"suite":"editing","tests":"web-features.cjs web-selection.cjs web-file-paste.cjs"},
                  {"suite":"cleanup","tests":"web-cleanup.cjs"},
                  {"suite":"memory","tests":"web-memory.cjs"},
                  {"suite":"waveform","tests":"web-waveform.cjs"},

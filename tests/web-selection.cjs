@@ -4,7 +4,7 @@ const frames=48000,width=1440,height=944;
 const diag=p=>p.evaluate(()=>coldeditWeb.diagnostics());
 const {settle:tick,captureFailure}=require('./web-test-helpers.cjs');
 async function key(p,k){await p.keyboard.press(k);await tick(p);}
-async function drag(p,a,b,alt=false){if(alt)await p.keyboard.down('Alt');await p.mouse.move(a,350);await tick(p);await p.mouse.down();await tick(p);await p.mouse.move(b,350,{steps:12});await tick(p);await p.mouse.up();if(alt)await p.keyboard.up('Alt');await tick(p);}
+async function drag(p,a,b,alt=false,y=350){if(alt)await p.keyboard.down('Alt');await p.mouse.move(a,y);await tick(p);await p.mouse.down();await tick(p);await p.mouse.move(b,y,{steps:12});await tick(p);await p.mouse.up();if(alt)await p.keyboard.up('Alt');await tick(p);}
 function sample(f,c){return f<0||f>=frames?0:Math.fround((c?-.1:.2)+.15*Math.sin(f*2*Math.PI/(c?71:48)));}
 function fixture(){const b=Buffer.alloc(44+frames*8);b.write('RIFF');b.writeUInt32LE(b.length-8,4);b.write('WAVEfmt ',8);b.writeUInt32LE(16,16);b.writeUInt16LE(3,20);b.writeUInt16LE(2,22);b.writeUInt32LE(48000,24);b.writeUInt32LE(384000,28);b.writeUInt16LE(8,32);b.writeUInt16LE(32,34);b.write('data',36);b.writeUInt32LE(frames*8,40);for(let f=0;f<frames;f++)for(let c=0;c<2;c++)b.writeFloatLE(sample(f,c),44+f*8+c*4);return b;}
 const range=d=>[d.selection_start,d.selection_end];
@@ -36,10 +36,12 @@ async function exportAudio(p,path,expected,total,trigger){const before=await dia
  try{for(const scale of (process.env.COLDEDIT_DPI||'1,1.25,2').split(',').map(Number)){
   const context=await browser.newContext({viewport:{width,height},deviceScaleFactor:scale,acceptDownloads:true}),p=await context.newPage(),errors=[];p.on('pageerror',e=>errors.push(e.message));p.setDefaultTimeout(20000);
   try{
+   // Fractional DPI rounds pointer coordinates to physical pixels in GLFW.
+   const cursorAt=(d,x,view=d)=>assert(Math.abs(d.position-Math.round(view.view_start+(x-70)/1100*view.view_span))<=view.view_span/(1100*scale)+1,'ruler click places the cursor within one physical pixel');
    await p.goto(process.env.COLDEDIT_WEB_URL||'http://localhost:8080/');await p.waitForFunction(()=>document.querySelector('#loading').hidden);
    await p.locator('#file-input').setInputFiles({name:'selection.wav',mimeType:'audio/wav',buffer:fixture()});await p.waitForFunction(()=>coldeditWeb.diagnostics().frames===48000);
-   // Double-click toggles full selection, including after Ctrl+A and at a handle
-   // or on the ruler where the first click can already change the range.
+   // Waveform double-click toggles full selection, including after Ctrl+A
+   // and at a handle where the first click can already change the range.
    const doubleClick=async(x,y=350)=>{await p.mouse.move(x,y);await tick(p);await p.mouse.dblclick(x,y);await tick(p);};
    const cleared=async()=>{const d=await diag(p);assert.equal(length(d),0,'full selection clears');assert.equal(d.position,d.selection_start,'playhead follows the clearing click');assert.equal(d.history_states,1);assert.equal(d.dirty,false);};
    await doubleClick(500);assert.deepEqual(range(await diag(p)),[0,frames]);
@@ -47,8 +49,40 @@ async function exportAudio(p,path,expected,total,trigger){const before=await dia
    await key(p,'Control+a');await doubleClick(700);await cleared();
    await drag(p,650,300);await doubleClick(450);assert.deepEqual(range(await diag(p)),[0,frames]);
    await doubleClick(72);await cleared();
-   await key(p,'Control+a');await doubleClick(550,140);await cleared();
+   await key(p,'Control+a');await doubleClick(550,140);
+   assert.deepEqual(range(await diag(p)),[0,frames],'even a ruler double-click preserves the selection');
+   cursorAt(await diag(p),550);await key(p,'Escape');
    await drag(p,300,650);const original=await diag(p);
+   // Ruler clicks seek inside/outside the range and at its handles, including
+   // modified clicks; small pointer jitter must leave the exact range intact.
+   for(const [x,modifier] of [[850,null],[475,null],[650,null],[800,'Shift'],[425,'Alt'],[300,null]]){
+    if(modifier)await p.keyboard.down(modifier);
+    await p.mouse.move(x,140);await tick(p);await p.mouse.down();await tick(p);
+    await p.mouse.move(x+2,141);await tick(p);await p.mouse.up();await tick(p);
+    if(modifier)await p.keyboard.up(modifier);
+    const clicked=await diag(p);assert.deepEqual(range(clicked),range(original));
+    cursorAt(clicked,x);
+    assert.equal(clicked.view_start,original.view_start);assert.equal(clicked.history_states,1);assert.equal(clicked.dirty,false);
+   }
+   await drag(p,475,575,false,140);const rulerMoved=await diag(p);
+   assert.equal(length(rulerMoved),length(original));assert(rulerMoved.selection_start>original.selection_start);
+   assert.equal(rulerMoved.position,original.position);assert.equal(rulerMoved.history_states,1);assert.equal(rulerMoved.dirty,false);
+   await drag(p,575,475,false,140);assert.deepEqual(range(await diag(p)),range(original));
+   // Zoom enough to pan. Starting outside the selection stays a pan even when
+   // the pointer crosses the range or leaves the ruler vertically.
+   await key(p,'=');await p.waitForFunction(()=>coldeditWeb.diagnostics().view_span===coldeditWeb.diagnostics().view_target_span);
+   const beforePan=await diag(p);await drag(p,1000,900,false,140);const panned=await diag(p);
+   assert(panned.view_start>beforePan.view_start);assert.equal(panned.view_span,beforePan.view_span);
+   assert.deepEqual(range(panned),range(original));assert.equal(panned.position,original.position);
+   await p.mouse.move(1100,140);await tick(p);await p.mouse.down();await tick(p);
+   await p.mouse.move(1000,350,{steps:8});await tick(p);await p.mouse.up();await tick(p);
+   assert((await diag(p)).view_start>panned.view_start);assert.deepEqual(range(await diag(p)),range(original));
+   const released=await diag(p);await p.mouse.move(800,140);await tick(p);assert.equal((await diag(p)).view_start,released.view_start);
+   await key(p,'Escape');const noRange=await diag(p);await drag(p,900,1000,false,140);
+   assert((await diag(p)).view_start<noRange.view_start);assert.equal(length(await diag(p)),0);assert.equal((await diag(p)).position,noRange.position);
+   const beforeSeek=await diag(p);await p.mouse.click(500,140,{delay:40});await tick(p);
+   assert.equal(length(await diag(p)),0);cursorAt(await diag(p),500,beforeSeek);
+   await key(p,'f');await p.waitForFunction(()=>coldeditWeb.diagnostics().view_span===48000);await drag(p,300,650);
    await exportAudio(p,`artifacts/web-save-selection-menu-${scale}.wav`,(f,c)=>sample(original.selection_start+f,c),length(original),async()=>{await key(p,'F10');await key(p,'Home');await key(p,'ArrowDown');await key(p,'ArrowDown');await key(p,'Enter');});
    await drag(p,475,575);let moved=await diag(p);assert.equal(length(moved),length(original));assert(moved.selection_start>original.selection_start);assert.equal(moved.history_states,1);assert.equal(moved.dirty,false);assert.equal(moved.position,original.position);
    await drag(p,400,500,true);assert(length(await diag(p))<length(original),'Alt-drag draws a fresh range');
@@ -81,7 +115,7 @@ async function exportAudio(p,path,expected,total,trigger){const before=await dia
    await key(p,'Escape');await key(p,'f');await p.waitForFunction(()=>Math.abs(coldeditWeb.diagnostics().view_span-48000)<.01);await drag(p,300,650);
    const saved=await diag(p);
    await exportAudio(p,`artifacts/web-save-selection-context-${scale}.wav`,(f,c)=>sample(saved.selection_start+f,c),length(saved),async()=>{await p.mouse.click(500,350,{button:'right',delay:40});await tick(p);await p.screenshot({path:`artifacts/web-selection-${scale}.png`});await key(p,'Home');for(let i=0;i<4;i++)await key(p,'ArrowDown');await key(p,'Enter');});
-   assert.deepEqual(errors,[]);assert.equal((await diag(p)).error,'');reports.push({scale,passed:true,diagnostics:await diag(p)});console.log(`PASS selection ${scale}x: double-click toggle, range drag, Alt-drag, Save selection WAV via menu/inspector/context, retained cut, mix samples/history, replacement, EOF and cut-all recovery`);
+   assert.deepEqual(errors,[]);assert.equal((await diag(p)).error,'');reports.push({scale,passed:true,diagnostics:await diag(p)});console.log(`PASS selection ${scale}x: ruler range drag/pan, double-click toggle, range drag, Alt-drag, Save selection WAV via menu/inspector/context, retained cut, mix samples/history, replacement, EOF and cut-all recovery`);
   }catch(e){await captureFailure(p,`web-selection-failure-${scale}`,e);throw e;}finally{await context.close();}
  }await slowDoubleClicks(browser);}finally{await browser.close();fs.writeFileSync('artifacts/web-selection.json',JSON.stringify(reports,null,2));}
 })().catch(e=>{console.error(e);process.exitCode=1;});

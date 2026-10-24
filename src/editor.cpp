@@ -194,6 +194,42 @@ void Editor::openNow(const std::filesystem::path& p) {
         if (stop.stop_requested()) { result->reset(); throw std::runtime_error("Import cancelled."); }
     }, [this, p, result] { acceptFile(std::move(*result), p); });
 }
+void Editor::requestPasteFile(const std::filesystem::path& p) {
+    const auto t = document_.timeline();
+    if (!t || busy_) return;
+    error_.clear(); playback_.pause(); cursor_ = playback_.position(); opening_ = true;
+    const bool mix = selected();
+    const Frame selectionAnchor = anchor_, selectionHead = head_;
+    const Frame a = first(), b = last(), pos = std::min(cursor_, t->frames);
+    const Frame fades = autoEdgeFades_ ? edgeFrames() : 0;
+    auto audio = std::make_shared<std::shared_ptr<AudioFile>>();
+    auto mixed = std::make_shared<std::shared_ptr<Timeline>>();
+    startJob("Pasting audio from file", [this, p, t, mix, a, b, audio, mixed](std::stop_token stop) {
+        auto file = AudioFile::open(p, &jobProgress_, stop);
+        if (file->sampleRate != t->sampleRate || file->channels != t->channels)
+            throw std::runtime_error("Audio from file must have the same sample rate and channel count as the current document.");
+        if (!file->frames) throw std::runtime_error("The selected file contains no audio to paste.");
+        if (!mix && file->frames > std::numeric_limits<Frame>::max() - t->frames)
+            throw std::runtime_error("The inserted audio would make the timeline too long.");
+        if (mix) {
+            Timeline clip; clip.sampleRate = file->sampleRate; clip.channels = file->channels;
+            clip.pieces = {{file, 0, file->frames}}; clip.rebuild();
+            *mixed = mixAudio(*t, clip, a, b, &jobProgress_, stop);
+        } else *audio = std::move(file);
+        if (stop.stop_requested()) { audio->reset(); mixed->reset(); throw std::runtime_error("Import cancelled."); }
+    }, [this, mix, selectionAnchor, selectionHead, pos, fades, audio, mixed] {
+        if (mix) {
+            document_.apply(std::move(*mixed), "Paste from file");
+            anchor_ = selectionAnchor; head_ = selectionHead;
+            afterEdit("Mixed audio from file into selection");
+        } else {
+            const auto& file = *audio;
+            document_.replace(pos, pos, {{file, 0, file->frames}}, "Insert from file", fades);
+            anchor_ = cursor_ = pos; head_ = pos + file->frames;
+            afterEdit("Inserted audio from file");
+        }
+    });
+}
 void Editor::acceptFile(std::shared_ptr<AudioFile> file, const std::filesystem::path& p) {
 #ifdef __EMSCRIPTEN__
         // Do not retain another document's audio through the browser clipboard.
@@ -202,7 +238,7 @@ void Editor::acceptFile(std::shared_ptr<AudioFile> file, const std::filesystem::
         playback_.pause(); document_.open(file); source_ = std::make_unique<SourceInfo>(file); sourcePath_ = p;
         title_ = utf8(p.filename());
         cursor_ = anchor_ = head_ = 0;
-        selecting_ = boundaryDrag_.active = rangeDrag_.active = false; view_.fit(double(source_->frames));
+        selecting_ = boundaryDrag_.active = rangeDrag_.active = rulerPanning_ = rulerClickPending_ = false; view_.fit(double(source_->frames));
         playback_.setTimeline(document_.timeline());
         status_ = "Opened " + title_; overviewTimeline_ = waveformTimeline_ = nullptr;
 }
@@ -220,13 +256,15 @@ void Editor::requestClose() {
     if (document_.dirty()) { pendingClose_ = true; pendingPath_.clear(); confirmDiscard_ = true; }
     else close_ = true;
 }
-void Editor::openDialog() {
+void Editor::openDialog(bool pasteFromFile) {
+    if (busy_ || (pasteFromFile && !document_.timeline())) return;
 #ifdef __EMSCRIPTEN__
-    webOpenPicker();
+    webOpenPicker(pasteFromFile);
 #elif defined(_WIN32)
-    auto path = fileDialog(window_, false); if (!path.empty()) requestOpen(path);
+    auto path = fileDialog(window_, false);
+    if (!path.empty()) { if (pasteFromFile) requestPasteFile(path); else requestOpen(path); }
 #else
-    openPathPopup_ = true;
+    pasteFilePath_ = pasteFromFile; openPathPopup_ = true;
 #endif
 }
 void Editor::exportDialog(bool selectionOnly) {
@@ -394,6 +432,7 @@ void Editor::action(const std::string& name) try {
     if (name == "fit") { view_.show(0, double(t->frames)); return; }
     if (name == "zoom-selection") { if (selected()) view_.show(double(first()), double(last() - first())); return; }
     if (name == "export-selection") { exportDialog(true); return; }
+    if (name == "paste-file") { openDialog(true); return; }
     if (name == "insert-silence") {
         playback_.pause(); cursor_ = playback_.position(); silenceAt_ = cursor_;
         const long double frames = std::round(static_cast<long double>(silenceSeconds_) * t->sampleRate);
@@ -586,6 +625,8 @@ void Editor::mainMenu() {
             item(selection ? "Paste into selection" : "Paste", "Ctrl+V", "paste", paste);
             item("Paste replace", "Ctrl+Shift+V", "paste-replace", paste && selection); item("Delete", "Del", "delete", selection);
             item("Trim to selection", "Ctrl+T", "trim", selection);
+            item("Paste/Insert from file...", nullptr, "paste-file", ready);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mix into the selection, or insert at the cursor when nothing is selected.\nThe file must match the sample rate and channel count. Clipboard stays unchanged.");
             ImGui::Separator(); item("Insert silence...", "Insert", "insert-silence", ready); ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Selection")) {
@@ -808,6 +849,7 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
     ImGui::SetCursorScreenPos(px({left, p.y}));
     ImGui::InvisibleButton("waveform", px({width, size.y}), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle | ImGuiButtonFlags_MouseButtonRight);
     const bool hovered = ImGui::IsItemHovered();
+    const bool onRuler = mouse.y < top;
     const auto frameAtMouse = [&] { return Frame(std::llround(view_.start + (mouse.x - left) / width * view_.span)); };
     if (hovered && (io.MouseWheel != 0 || io.MouseWheelH != 0)) {
         if (io.KeyAlt) verticalZoom_ = std::clamp(verticalZoom_ * std::exp(io.MouseWheel * .12f), .25f, 8.f);
@@ -820,10 +862,15 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
     }
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         const Frame frame = frameAtMouse();
-        const bool doubleClick = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
-        // The first click can move a selection edge or clear the range on the ruler.
+        const bool doubleClick = !onRuler && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+        // The first click can move a selection edge.
         // Toggle using the selection that existed before that first click.
         if (!doubleClick) fullSelectionAtClick_ = selected() && first() == 0 && last() == t->frames;
+        rulerPanning_ = false;
+        // Wait for release to distinguish a ruler click from a drag. Small
+        // pointer movement must not change the selection or pan the view.
+        rulerClickPending_ = onRuler;
+        rulerClickFrame_ = std::clamp(frame, Frame(0), t->frames);
         if (doubleClick) {
             if (fullSelectionAtClick_) {
                 anchor_ = head_ = cursor_ = std::clamp(frame, Frame(0), t->frames);
@@ -834,11 +881,14 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
             rangeDrag_.active = false;
             boundaryDragLimit_ = selectionExtent();
             boundaryDrag_.begin(edge, anchor_, head_, frame);
-            boundaryDrag_.update(frame, boundaryDragLimit_, anchor_, head_);
+            if (!onRuler) boundaryDrag_.update(frame, boundaryDragLimit_, anchor_, head_);
             selecting_ = true;
-        } else if (selected() && frame >= first() && frame <= last() && !io.KeyShift && !io.KeyAlt && mouse.y >= top) {
+        } else if (selected() && frame >= first() && frame <= last() && (onRuler || (!io.KeyShift && !io.KeyAlt))) {
             boundaryDrag_.active = false; rangeDrag_.begin(anchor_, head_, frame, t->frames);
             selecting_ = true;
+        } else if (onRuler) {
+            selecting_ = boundaryDrag_.active = rangeDrag_.active = false;
+            rulerPanning_ = true;
         } else {
             boundaryDrag_.active = rangeDrag_.active = false;
             head_ = std::clamp(frame, Frame(0), t->frames);
@@ -847,20 +897,32 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
         }
     }
     if ((hovered && edge != SelectionEdge::None) || boundaryDrag_.active) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-    if (hovered && edge != SelectionEdge::None && !selecting_) ImGui::SetTooltip("Drag to adjust selection %s", edge == SelectionEdge::Start ? "start" : "end");
-    if (rangeDrag_.active || (hovered && edge == SelectionEdge::None && selected() && frameAtMouse() > first() && frameAtMouse() < last() && mouse.y >= top && !io.KeyAlt && !io.KeyShift)) {
+    if (hovered && edge != SelectionEdge::None && !selecting_) ImGui::SetTooltip("%sDrag to adjust selection %s", onRuler ? "Click to place the play cursor.\n" : "", edge == SelectionEdge::Start ? "start" : "end");
+    if (rangeDrag_.active || (hovered && edge == SelectionEdge::None && selected() && frameAtMouse() > first() && frameAtMouse() < last() && (onRuler || (!io.KeyAlt && !io.KeyShift)))) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
-        if (!selecting_) ImGui::SetTooltip("Drag to move the selection range; audio stays in place.\nAlt-drag to draw a new range. Shift-click to extend.");
+        if (!selecting_) ImGui::SetTooltip("%s", onRuler ? "Click to place the play cursor.\nDrag to move the selection range; audio stays in place." : "Drag to move the selection range; audio stays in place.\nAlt-drag to draw a new range. Shift-click to extend.");
+    }
+    if (rulerClickPending_ && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) rulerClickPending_ = false;
+    if (rulerPanning_) {
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) rulerPanning_ = false;
+        else {
+            if (!rulerClickPending_) view_.pan(-io.MouseDelta.x / dpi_.layout / width * view_.span, true);
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        }
+    } else if (hovered && onRuler && edge == SelectionEdge::None && !selecting_ &&
+               (!selected() || frameAtMouse() < first() || frameAtMouse() > last())) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        ImGui::SetTooltip("Click to place the play cursor. Drag to pan the view.\nThe selection stays in place.");
     }
     if (selecting_) {
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
             // Moving a range must retain its exact length, even with snapping on.
-            if (snapZero_ && !rangeDrag_.active) snapSelection(boundaryDrag_.active);
+            if (snapZero_ && !rangeDrag_.active && !rulerClickPending_) snapSelection(boundaryDrag_.active);
             selecting_ = false; boundaryDrag_.active = rangeDrag_.active = false;
             // A playing loop adopts the finished range without restarting on every pixel.
-            if (loop_ && playback_.playing()) playback_.play(playback_.position(), selected() ? first() : 0, selected() ? last() : t->frames, true);
+            if (!rulerClickPending_ && loop_ && playback_.playing()) playback_.play(playback_.position(), selected() ? first() : 0, selected() ? last() : t->frames, true);
         }
-        else if (ImGui::IsMousePosValid()) {
+        else if (!rulerClickPending_ && ImGui::IsMousePosValid()) {
             if (mouse.x < left || mouse.x > right) {
                 const float distance = mouse.x < left ? mouse.x - left : mouse.x - right;
                 view_.pan(distance / width * view_.span * io.DeltaTime * 8, true);
@@ -869,6 +931,10 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
             else if (boundaryDrag_.active) boundaryDrag_.update(frameAtMouse(), boundaryDragLimit_, anchor_, head_);
             else head_ = std::clamp(frameAtMouse(), Frame(0), t->frames);
         }
+    }
+    if (rulerClickPending_ && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        cursor_ = rulerClickFrame_; playback_.seek(cursor_);
+        rulerClickPending_ = false;
     }
     if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0)) { view_.pan(-io.MouseDelta.x / dpi_.layout / width * view_.span, true); ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); }
     if (ImGui::BeginPopupContextItem("Wave actions")) {
@@ -880,7 +946,10 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
         if (ImGui::MenuItem("Trim", "Ctrl+T", false, selected())) action("trim");
         if (ImGui::MenuItem("Reverse", "R")) action("reverse");
         if (ImGui::MenuItem("Silence")) action("silence");
+        const bool pasteFile = ImGui::MenuItem("Paste/Insert from file...", nullptr, false, !busy_);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mix into the selection, or insert at the cursor when nothing is selected.\nThe file must match the sample rate and channel count. Clipboard stays unchanged.");
         ImGui::EndPopup();
+        if (pasteFile) openDialog(true);
     }
 }
 void Editor::overview(ImVec2 p, ImVec2 size) {
@@ -1193,6 +1262,7 @@ void Editor::modals() {
     fitModal();
     if (ImGui::BeginPopupModal("Find your way around", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextUnformatted("TIMELINE"); ImGui::Spacing();
+        ImGui::TextWrapped("Click the top ruler to place the play cursor without changing the selection. Drag inside the selection to move it; drag elsewhere on the ruler to pan.");
         const char* rows[][2] = {{wheelZooms_ ? "Wheel" : "Ctrl + wheel", "Zoom around the pointer"}, {wheelZooms_ ? "Ctrl + wheel" : "Wheel", "Scroll through audio"}, {"Horizontal wheel", "Scroll through audio"}, {"Navigator wheel", "Zoom around the current view"}, {"Middle-button drag", "Pan directly"}, {"Alt + wheel", "Adjust vertical scale"}, {"Drag / Shift-click", "Select / extend range"}, {"Drag inside / Alt-drag", "Move range / draw new range"}, {"Double-click", "Select all / clear full selection"}, {"Space / L", "Play-pause / toggle loop"}, {"F / Z", "Fit file / zoom to selection"}, {"Ctrl + X / C / V", "Cut / copy / paste (mix into selection)"}, {"Ctrl + Shift + V", "Replace selection with clipboard"}, {"Ctrl + T / Delete", "Trim / delete selection"}, {"Ctrl + Z / Ctrl + Shift + Z", "Undo / redo"}, {"R / Home / End", "Reverse / jump to start / end"}, {"Ctrl + O / Ctrl + E", "Open audio / export audio"}, {"I / O", "Fade in / fade out selection"}, {"Insert", "Insert silence at cursor"}, {"J", "Snap selection to zero crossings"}, {"Ctrl + Shift + E", "Save selected audio (WAV/FLAC/MP3)"}};
         if (ImGui::BeginTable("keys", 2, 0, px({compact_ ? contentWidth : 510, 0}))) { for (auto& row : rows) { ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextWrapped("%s", row[0]); ImGui::TableNextColumn(); ImGui::TextWrapped("%s", row[1]); } ImGui::EndTable(); }
         ImGui::Spacing(); if (button("Back to the sound", {-1, 36}, true)) ImGui::CloseCurrentPopup(); ImGui::EndPopup();
@@ -1201,7 +1271,12 @@ void Editor::modals() {
     fitModal();
     if (ImGui::BeginPopupModal("Open path", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::SetNextItemWidth(px(480)); ImGui::InputText("WAV / FLAC / MP3 path", pathInput_, sizeof(pathInput_));
-        if (button("Open")) { requestOpen(fromUtf8(pathInput_)); ImGui::CloseCurrentPopup(); } ImGui::SameLine(); if (button("Cancel")) ImGui::CloseCurrentPopup(); ImGui::EndPopup();
+        if (pasteFilePath_) ImGui::TextUnformatted("Mix into selection, or insert at the cursor when nothing is selected.");
+        if (button(pasteFilePath_ ? "Paste/Insert" : "Open")) {
+            if (pasteFilePath_) requestPasteFile(fromUtf8(pathInput_)); else requestOpen(fromUtf8(pathInput_));
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine(); if (button("Cancel")) ImGui::CloseCurrentPopup(); ImGui::EndPopup();
     }
     if (exportPathPopup_) { ImGui::OpenPopup("Export path"); exportPathPopup_ = false; }
     fitModal();

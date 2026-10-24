@@ -18,8 +18,9 @@ struct Viewport {
     }
     void pan(double frames, bool instant = false) { show(targetStart + frames, targetSpan, instant); }
     void follow(double frame) {
-        // Let playback advance through the view before scrolling forward.
-        if (frame < start + span * (2.0 / 3.0)) return;
+        // Wait for the forward threshold while visible, but recover immediately
+        // when a loop or seek takes the playhead off-screen to the left.
+        if (frame >= start && frame < start + span * (2.0 / 3.0)) return;
         // Track directly so even a view shorter than the animation's settling
         // time keeps the playhead visible. Zoom still eases through update().
         start = frame - span * (2.0 / 3.0);

@@ -6,6 +6,7 @@ const loadingText = document.getElementById('loading-text');
 const notice = document.getElementById('notice');
 const exportLink = document.getElementById('download-export');
 let started = false, importing = false, exportUrl = null;
+let pasteFile = false;
 let inputLimit = 64 * 1024 * 1024, exportLimit = 128 * 1024 * 1024;
 // Multiplying rounded CSS dimensions by DPR can miss a physical pixel at
 // fractional browser zoom. Use the browser's own snapped content-box size.
@@ -46,12 +47,12 @@ window.coldeditWeb = {
     loading.hidden = true; canvas.focus();
   },
   fail(message) { started = false; loading.hidden = false; loadingText.textContent = message; },
-  pickFile() { if (started && !importing) { input.value = ''; input.click(); } },
+  pickFile(paste = false) { if (started && !importing) { pasteFile = paste; input.value = ''; input.click(); } },
   clearImport() {
     if (!Module.FS) return;
     for (const name of Module.FS.readdir('/imports')) if (name !== '.' && name !== '..') Module.FS.unlink('/imports/' + name);
   },
-  async openFile(file) {
+  async openFile(file, paste = false) {
     if (!file || !started) return;
     if (importing || !Module._coldedit_can_import()) { showNotice('Finish the current operation or close the dialog before opening another audio file.'); return; }
     if (file.size > inputLimit) {
@@ -66,7 +67,7 @@ window.coldeditWeb = {
       const name = file.name.replace(/[\\/\x00-\x1f]/g, '_').replace(/^\.+$/, 'recording.wav') || 'recording.wav';
       const path = '/imports/' + name;
       Module.FS.writeFile(path, bytes, {canOwn: true});
-      Module.ccall('coldedit_open', null, ['string'], [path]);
+      Module.ccall(paste ? 'coldedit_paste_file' : 'coldedit_open', null, ['string'], [path]);
       notice.hidden = true; canvas.focus();
     } catch (error) { this.clearImport(); showNotice('Could not open this audio file: ' + error.message); }
     finally { importing = false; input.value = ''; }
@@ -108,7 +109,11 @@ var Module = {
   onAbort: () => window.coldeditWeb.fail('The editor could not continue. Reload this page or use the native app. Unsaved edits cannot be recovered.'),
   setStatus: message => { if (!started && message) loadingText.textContent = message; }
 };
-input.addEventListener('change', () => window.coldeditWeb.openFile(input.files[0]));
+input.addEventListener('change', () => {
+  const paste = pasteFile; pasteFile = false;
+  window.coldeditWeb.openFile(input.files[0], paste);
+});
+input.addEventListener('cancel', () => { pasteFile = false; canvas.focus(); });
 // Capture the browser's click count before GLFW handles this same event. Clear
 // it after dispatch so synthesized touch input cannot reuse an old mouse count.
 canvas.addEventListener('mousedown', event => {

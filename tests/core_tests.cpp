@@ -460,7 +460,7 @@ static void viewportTests() {
                 cursor += 48000 * dt;
                 v.update(dt);
                 const double left = v.start, targetLeft = v.targetStart;
-                const bool beforeThreshold = cursor < left + v.span * (2.0 / 3.0);
+                const bool beforeThreshold = cursor >= left && cursor < left + v.span * (2.0 / 3.0);
                 v.follow(cursor);
                 CHECK(v.span >= std::min(before, target) && v.span <= std::max(before, target));
                 const double fraction = (cursor - v.start) / v.span;
@@ -473,17 +473,28 @@ static void viewportTests() {
     }
     v.fit(480000); v.show(0, 48000, true);
     v.follow(100); CHECK(v.start == 0 && v.targetStart == 0);
-    // Threshold is relative to the current view, including after a seek back.
+    // Visible rewinds keep the threshold; off-screen loop/seek positions recover.
     v.show(120000, 48000, true);
     v.follow(130000); CHECK(v.start == 120000 && v.targetStart == 120000);
     v.follow(151999); CHECK(v.start == 120000 && v.targetStart == 120000);
     v.follow(152000); CHECK(v.start == 120000 && v.targetStart == 120000);
     v.follow(152001); CHECK(v.start == 120001 && v.targetStart == 120001);
     v.follow(160000); CHECK(v.start == 128000 && v.targetStart == 128000);
-    v.follow(125000); CHECK(v.start == 128000 && v.targetStart == 128000);
+    v.follow(140000); CHECK(v.start == 128000 && v.targetStart == 128000);
+    v.follow(128000); CHECK(v.start == 128000 && v.targetStart == 128000);
+    v.follow(127999); CHECK(v.start == 95999 && v.targetStart == 95999);
     v.follow(480000); CHECK(v.start == 432000 && v.targetStart == 432000);
-    v.follow(240000); CHECK(v.start == 432000 && v.targetStart == 432000);
-    v.follow(0); CHECK(v.start == 432000 && v.targetStart == 432000);
+    v.follow(240000); CHECK(v.start == 208000 && v.targetStart == 208000);
+    v.follow(0); CHECK(v.start == 0 && v.targetStart == 0);
+    v.follow(16000); CHECK(v.start == 0 && v.targetStart == 0);
+    v.follow(32001); CHECK(v.start == 1 && v.targetStart == 1);
+    // Recovery during a zoom updates both positions without ending the zoom.
+    v.show(120000, 48000, true); v.zoom(.5, .5); v.update(.01);
+    const double span = v.span, targetSpan = v.targetSpan;
+    v.follow(100000);
+    CHECK(std::abs(100000 - v.start - v.span * (2.0 / 3.0)) < .001);
+    CHECK(std::abs(100000 - v.targetStart - v.targetSpan * (2.0 / 3.0)) < .001);
+    CHECK(v.span == span && v.targetSpan == targetSpan);
     v.fit(480000); v.follow(240000); CHECK(v.start == 0 && v.span == 480000);
     v.fit(0); v.follow(0); CHECK(v.start == 0 && v.span == 1);
 }

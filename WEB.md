@@ -21,6 +21,11 @@ same shared audio budget as imports and filters, including undo history (128 MiB
 by default, optionally 256 or 512 MiB).
 `tests/web-selection.cjs` checks real pointer/keyboard input and every exported
 sample after mixing, plus retained ranges at EOF and recovery after cutting all.
+Ruler clicks place the play cursor without changing the selection; ruler drags
+move the selection or pan without clearing it. **Edit > Paste/Insert
+from file...** uses the same browser file picker to mix into the selection or
+insert at the cursor. `tests/web-file-paste.cjs` verifies imported audio samples,
+undo/redo, clipboard preservation, format checks, and WAV/FLAC/MP3 support.
 
 ## Run the packaged build
 
@@ -190,6 +195,7 @@ node tests/web-follow.cjs
 node tests/web-features.cjs
 node tests/web-cleanup.cjs
 node tests/web-selection.cjs
+node tests/web-file-paste.cjs
 node tests/web-mobile.cjs
 ```
 

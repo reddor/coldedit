@@ -57,6 +57,9 @@ browser-specific memory behavior. Smaller screens use a compact toolbar and a
   at the shorter of the clipboard or selection. It neither repeats nor stretches.
   The remaining selection stays unchanged; mixing beyond EOF extends the audio.
   Paste replace is separate; paste without a selection inserts at the cursor.
+- **Edit > Paste/Insert from file...** mixes a WAV, FLAC or MP3 into the selection,
+  or inserts it at the cursor when nothing is selected, in one undo step.
+  The file must match the document's sample rate and channel count; the clipboard is preserved.
 - Play, pause, seek, loop the selection or file, follow playback, output meters,
   monitor gain, and independent vertical waveform scale.
 - Cut, copy, paste, delete, trim, silence, reverse, gain, normalize to -1 dBFS,
@@ -121,9 +124,11 @@ above full scale can clip in playback or integer WAV export. Normalize if needed
 | Alt + wheel | Vertical waveform scale |
 | Drag / Shift-click | Select / extend selection |
 | Drag inside selection | Move range, preserving its length and the audio |
+| Click top ruler | Place the play cursor without changing the selection |
+| Drag top ruler | Move the selection when inside it; otherwise pan the view without clearing it |
 | Alt-drag | Draw a new range, even inside a selection |
 | Drag selection edge or ruler handle | Adjust start or end; drag beyond view to autoscroll |
-| Double-click | Select all / clear full selection |
+| Double-click waveform | Select all / clear full selection |
 | Ctrl+A | Select all |
 | Space | Play / pause |
 | L | Toggle loop |
@@ -154,8 +159,9 @@ appear in the bottom status bar.
 
 **Follow playback** is off by default. When enabled, the view stays put until
 the playhead reaches about two-thirds across the waveform, then scrolls forward
-to keep it there, stopping at the file's boundary. Zooming, panning, and selecting
-preserve this setting; toggle it in the inspector or
+to keep it there, stopping at the file's boundary. If a loop or seek takes the
+playhead off-screen to the left, the view brings it back immediately. Zooming,
+panning, and selecting preserve this setting; toggle it in the inspector or
 **ColdEdit > Playback > Follow playback**.
 
 ## Build and verify

@@ -19,6 +19,7 @@ public:
     void updateDpi(float contentScale, float framebufferScale);
     float uiScale() const { return dpi_.layout; }
     void requestOpen(const std::filesystem::path& path);
+    void requestPasteFile(const std::filesystem::path& path);
     void requestClose();
     void loadSmokeAudio();
     bool shouldClose() const { return close_; }
@@ -54,6 +55,9 @@ private:
     Frame anchor_ = 0, head_ = 0, cursor_ = 0;
     bool selecting_ = false, loop_ = false, follow_ = false, close_ = false;
     bool fullSelectionAtClick_ = false;
+    bool rulerPanning_ = false;
+    bool rulerClickPending_ = false;
+    Frame rulerClickFrame_ = 0;
     bool wheelZooms_ = true;
     bool compact_ = false, compactTools_ = false;
     SelectionBoundaryDrag boundaryDrag_;
@@ -62,6 +66,7 @@ private:
     bool pendingClose_ = false, confirmDiscard_ = false, help_ = false, openPathPopup_ = false;
     bool continueAfterExport_ = false;
     bool opening_ = false;
+    bool pasteFilePath_ = false;
     bool exportPathPopup_ = false, selectionExport_ = false, insertSilencePopup_ = false;
     double silenceSeconds_ = 1;
     Frame silenceFrames_ = 48000, silenceAt_ = 0;
@@ -125,7 +130,7 @@ private:
     Frame selectionExtent() const { const auto t = document_.timeline(); return std::max(t ? t->frames : Frame(0), last()); }
     void openNow(const std::filesystem::path& path);
     void acceptFile(std::shared_ptr<AudioFile> file, const std::filesystem::path& path);
-    void openDialog();
+    void openDialog(bool pasteFromFile = false);
     void exportDialog(bool selectionOnly = false);
     void exportTo(const std::filesystem::path& path, bool selectionOnly = false);
     void afterEdit(const std::string& label);

@@ -52,7 +52,7 @@ std::uint64_t residentBytes() {
     return 0;
 }
 #ifdef __EMSCRIPTEN__
-EM_JS(void, browserPicker, (), { window.coldeditWeb.pickFile(); });
+EM_JS(void, browserPicker, (bool pasteFromFile), { window.coldeditWeb.pickFile(!!pasteFromFile); });
 EM_JS(void, browserClearImport, (), { window.coldeditWeb.clearImport(); });
 EM_JS(void, browserSetDirty, (bool dirty), { window.coldeditWeb.dirty = !!dirty; });
 EM_JS(int, downloadBrowserFile, (const char* path), { return window.coldeditWeb.download(UTF8ToString(path)) ? 1 : 0; });
@@ -78,7 +78,7 @@ EM_JS(int, saveBrowserAudioBudget, (unsigned mib), {
 });
 unsigned loadWebAudioBudget() { return loadBrowserAudioBudget(); }
 bool saveWebAudioBudget(unsigned mib) { return saveBrowserAudioBudget(mib) != 0; }
-void webOpenPicker() { browserPicker(); }
+void webOpenPicker(bool pasteFromFile) { browserPicker(pasteFromFile); }
 void webClearImport() { browserClearImport(); }
 void webSetDirty(bool dirty) { browserSetDirty(dirty); }
 bool webDownload(const std::filesystem::path& path) { return downloadBrowserFile(utf8(path).c_str()) != 0; }

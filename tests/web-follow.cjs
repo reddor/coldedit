@@ -4,8 +4,8 @@ const assert = require('node:assert/strict');
 const {settle,captureFailure} = require('./web-test-helpers.cjs');
 const diag = page => page.evaluate(() => coldeditWeb.diagnostics());
 async function key(page, value) { await page.keyboard.press(value); await settle(page); }
-function fixture() {
-  const data = Buffer.alloc(44 + 48000 * 120 * 2);
+function fixture(seconds=120) {
+  const data = Buffer.alloc(44 + 48000 * seconds * 2);
   data.write('RIFF'); data.writeUInt32LE(data.length-8,4); data.write('WAVEfmt ',8);
   data.writeUInt32LE(16,16); data.writeUInt16LE(1,20); data.writeUInt16LE(1,22);
   data.writeUInt32LE(48000,24); data.writeUInt32LE(96000,28);
@@ -40,6 +40,21 @@ async function tracks(page) {
       `cursor stays at two thirds while the waveform moves: ${JSON.stringify(d)}`);
   }
   assert(frames.at(-1).view_cursor>frames[0].view_cursor,'audio playback advances');
+}
+async function loopsInView(page) {
+  const frames=await samples(page,120);
+  let wraps=0;
+  for (let i=0;i<frames.length;i++) {
+    const d=frames[i];
+    assert.equal(d.playing,true); assert.equal(d.follow_playback,true);
+    assert(d.view_cursor>=d.view_start-8 && d.view_cursor<=d.view_start+d.view_span+8,
+      'looping playhead remains visible on every frame');
+    if (i && d.view_cursor<frames[i-1].view_cursor) {
+      assert(d.view_cursor<frames[i-1].view_start,'loop goes off the previous view to the left');
+      wraps++;
+    }
+  }
+  assert(wraps>0,'observed an actual playback loop');
 }
 async function zoom(page, x, y, delta) {
   const before=(await diag(page)).view_target_span;
@@ -106,8 +121,22 @@ async function zoom(page, x, y, delta) {
         assert.equal((await diag(page)).follow_playback,false,'zoom preserves explicit off state');
         await toggleFollow(page); await tracks(page);
         await key(page,'Space');
+        // Exercise real selection and whole-file loops with a view shorter than either loop.
+        await page.locator('#file-input').setInputFiles({name:'loop.wav',mimeType:'audio/wav',buffer:fixture(1)});
+        await page.waitForFunction(()=>coldeditWeb.diagnostics().title==='loop.wav');
+        await page.mouse.move(345,350); await page.mouse.down(); await settle(page);
+        await page.mouse.move(895,350,{steps:8}); await settle(page);
+        await page.mouse.up(); await settle(page);
+        const selection=await diag(page);
+        assert(selection.selection_end>selection.selection_start,'selection loop has a range');
+        for (let i=0;i<4;i++) await key(page,'Equal');
+        await key(page,'l'); await key(page,'Space');
+        await loopsInView(page);
+        await key(page,'Space'); await key(page,'Escape');
+        assert.equal((await diag(page)).selection_start,(await diag(page)).selection_end);
+        await key(page,'Space'); await loopsInView(page); await key(page,'Space');
         assert.deepEqual(errors,[]);
-        console.log(`PASS follow ${scale}x: default off, threshold, continuous scrolling, live zoom and explicit toggle`);
+        console.log(`PASS follow ${scale}x: default off, threshold, live zoom, explicit toggle and loop recovery`);
       } catch (error) { await captureFailure(page,`web-follow-failure-${scale}`,error); throw error; }
       finally { await context.close(); }
     }

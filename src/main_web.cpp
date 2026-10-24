@@ -59,6 +59,7 @@ void frame() {
 extern "C" {
 EMSCRIPTEN_KEEPALIVE int coldedit_can_import() { return editor && editor->canImport(); }
 EMSCRIPTEN_KEEPALIVE void coldedit_open(const char* path) { if (editor) editor->requestOpen(coldedit::fromUtf8(path)); }
+EMSCRIPTEN_KEEPALIVE void coldedit_paste_file(const char* path) { if (editor) editor->requestPasteFile(coldedit::fromUtf8(path)); }
 EMSCRIPTEN_KEEPALIVE const char* coldedit_diagnostics() {
     static std::string value; value = editor ? editor->diagnostics() : "{}"; return value.c_str();
 }
