@@ -129,7 +129,7 @@ jobs:
                  {"suite":"editing","tests":"web-features.cjs web-selection.cjs web-file-paste.cjs"},
                  {"suite":"cleanup","tests":"web-cleanup.cjs"},
                  {"suite":"memory","tests":"web-memory.cjs"},
-                 {"suite":"waveform","tests":"web-waveform.cjs"},
+                 {"suite":"waveform","tests":"web-loading.cjs web-waveform.cjs"},
                  {"suite":"codecs","tests":"web-codecs.cjs web-mp3.cjs"},
                  {"suite":"mobile","tests":"web-mobile.cjs"}]'
             || '[{"suite":"smoke","tests":"web-smoke.cjs"}]') }}

@@ -114,6 +114,16 @@ static void waveformTests() {
     near(peak(1.5, 1.5).lo, .5f); near(peak(1.5, 1.5).hi, .5f);
     near(peak(-8, -2).hi, 0); near(peak(6, 8).lo, 0);
 
+    // A pending wide view must not draw arbitrary pixel-boundary samples as
+    // peaks. Before this guard, moving the edge across this impulse flickered.
+    for (double edge : {1.5, 1.99, 2., 2.01, 2.5}) {
+        const auto pending = waveformPeak(*doc.timeline(), edge, edge + 5000, 0, false);
+        near(pending.lo, 0); near(pending.hi, 0);
+    }
+    near(waveformPeak(*doc.timeline(), 1.25, 1.75, 0, false).hi, .75f);
+    CHECK(waveformBuild(doc.timeline().get()).ready);
+    CHECK(!waveformBuild(doc.timeline().get()).building);
+
     auto dc = AudioFile::open(fixture("waveform-dc.wav", 32, 1, true, {.4f, .4f, .4f}));
     dc->waitForPeaks(); doc.open(dc);
     near(peak(.2, .3).lo, .4f); near(peak(.2, .3).hi, .4f); // No integer sample in this pixel.
@@ -313,6 +323,26 @@ static void cleanupTests() {
     throws([&] { processAudio(*original, 0, 48000, {Cleanup::RemoveDC, 0}, nullptr, stop.get_token()); });
     std::stop_source midway;
     throws([&] { AudioFile::render(10000, 48000, 2, [&](Frame, Frame, float*) { midway.request_stop(); }, nullptr, midway.get_token()); });
+#ifndef __EMSCRIPTEN__
+    // A range over 4 GiB must reach the streaming sink, and remain cancellable,
+    // without reserving a whole-file heap buffer or writing gigabytes in CI.
+    bool beganLargeRender = false;
+    std::stop_source largeStop;
+    try {
+        AudioFile::render(Frame((1ull << 32) / 8 + 4096), 48000, 2,
+            [&](Frame, Frame n, float* block) {
+                beganLargeRender = true;
+                std::fill_n(block, std::size_t(n) * 2, 0.f); largeStop.request_stop();
+            }, nullptr, largeStop.get_token());
+        CHECK(false);
+    } catch (const std::exception& e) { CHECK(std::string(e.what()).find("cancel") != std::string::npos); }
+    CHECK(beganLargeRender);
+    throws([&] { AudioFile::render(INT64_MAX, 48000, 2, [](Frame, Frame, float*) {}, nullptr, {}); });
+    auto emptyRender = AudioFile::render(0, 48000, 2, [](Frame, Frame, float*) { CHECK(false); }, nullptr, {});
+    CHECK(emptyRender->frames == 0); CHECK(emptyRender->peaksReady());
+    const auto emptyPath = emptyRender->path; CHECK(std::filesystem::exists(emptyPath));
+    emptyRender.reset(); CHECK(!std::filesystem::exists(emptyPath));
+#endif
     // Measure the steady-state response at low, cutoff, and high frequencies.
     for (unsigned rate : {8000u, 44100u, 48000u, 96000u}) for (auto kind : {Cleanup::HighPass, Cleanup::LowPass}) {
         for (double frequency : {100., 1000., 3000.}) {

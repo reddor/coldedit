@@ -42,11 +42,8 @@ private:
         bool floating;
         Frame frames;
         std::string format;
-        std::weak_ptr<AudioFile> audio;
         explicit SourceInfo(const std::shared_ptr<AudioFile>& f) : sampleRate(f->sampleRate), bits(f->bits),
-            floating(f->floating), frames(f->frames), format(f->format), audio(f) {}
-        bool peaksReady() const { const auto f = audio.lock(); return !f || f->peaksReady(); }
-        float peakProgress() const { const auto f = audio.lock(); return f ? f->peakProgress() : 1; }
+            floating(f->floating), frames(f->frames), format(f->format) {}
     };
     std::unique_ptr<SourceInfo> source_;
     std::filesystem::path sourcePath_, pendingPath_;
@@ -66,6 +63,7 @@ private:
     bool pendingClose_ = false, confirmDiscard_ = false, help_ = false, openPathPopup_ = false;
     bool continueAfterExport_ = false;
     bool opening_ = false;
+    std::string openingName_;
     bool pasteFilePath_ = false;
     bool exportPathPopup_ = false, selectionExport_ = false, insertSilencePopup_ = false;
     double silenceSeconds_ = 1;

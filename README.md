@@ -42,8 +42,9 @@ browser-specific memory behavior. Smaller screens use a compact toolbar and a
   delay/padding metadata is honored when present. LAME 3.100 exports MP3 using
   high-quality VBR (V2), 192 kbps CBR, or 320 kbps CBR, including gapless metadata.
   Compressed imports run on a cancellable worker. Native decoding streams to a
-  temporary mapped float WAV (up to 4 GiB), and the browser enforces its shared
-  audio budget against both declared duration and actual decoded output.
+  temporary mapped float PCM file (including recordings over 4 GiB decoded).
+  The browser enforces its shared audio budget against both declared duration
+  and actual decoded output.
 - Pointer-anchored animated zoom, continuous wheel/trackpad scrolling,
   middle-button panning, full-file navigator, selection autoscroll, exact
   sample-range entry, and connected samples/dots at close zoom.
@@ -247,6 +248,11 @@ under `artifacts/`. The suite requires a graphical session and OpenGL 3.3.
 .\build\coldedit_benchmark.exe
 ```
 
+The optional `build/coldedit_codec_tests.exe --large-file` integration test
+decodes over 4 GiB of float PCM with both known and unknown FLAC lengths and
+checks samples and peaks across the boundary. It needs at least 5 GiB free on
+the system temporary drive; its temporary audio is removed after the test.
+
 The standalone benchmark creates and removes a 256 MiB WAV in its working
 directory. It measures mapping, peak construction, 128 edits, and 250 stereo
 waveform queries at 1,600 columns across changing zoom levels. See
@@ -255,7 +261,15 @@ waveform queries at 1,600 columns across changing zoom levels. See
 ## How it stays small
 
 Native WAV audio is read through a read-only file mapping. FLAC/MP3 decoding
-streams through small blocks into a temporary float WAV, then maps it read-only.
+streams through small blocks into a temporary raw float PCM file, then maps it read-only.
+The waveform area shows import progress and cancellation while decoding, followed
+by waveform-building progress. Wide views wait for the completed peak cache;
+close zoom can display actual samples while it builds, and playback is available.
+Native temporary audio has no 4 GiB container limit: it requires sufficient space
+on the system temporary drive and a 64-bit address space. Float PCM needs
+`frames × channels × 4` bytes (about 1.29 GiB per hour at 48 kHz stereo).
+Standard RIFF/WAV import/export still uses 32-bit chunk sizes; RF64 is not supported.
+Use FLAC export or a shorter selection when the WAV output would exceed 4 GiB.
 There is no whole-file decoded float heap buffer on native. The OS manages mapped pages; they may appear in the working set
 and can be reclaimed under memory pressure. Mapping a file does **not** mean
 that its full size is private heap memory.
@@ -285,7 +299,7 @@ cost; multiple retained sources each retain their own peak cache. Channel tools
 use small mixing matrices and normalization uses gain metadata.
 
 DC removal and filters render only the affected range on a worker. Native
-processing streams through a 32 KiB block into a temporary float WAV, then maps
+processing streams through a 32 KiB block into a temporary raw float PCM file, then maps
 it read-only; it does not allocate a full decoded recording in RAM. Temporary
 files are released when no preview, clipboard, playback, or undo state needs
 them. Undo retains the original samples; a process crash may leave temporary

@@ -187,7 +187,7 @@ void Editor::requestOpen(const std::filesystem::path& p) {
 }
 void Editor::openNow(const std::filesystem::path& p) {
     error_.clear();
-    playback_.pause(); opening_ = true;
+    playback_.pause(); opening_ = true; openingName_ = utf8(p.filename());
     auto result = std::make_shared<std::shared_ptr<AudioFile>>();
     startJob("Opening audio", [this, p, result](std::stop_token stop) {
         *result = AudioFile::open(p, &jobProgress_, stop);
@@ -197,7 +197,7 @@ void Editor::openNow(const std::filesystem::path& p) {
 void Editor::requestPasteFile(const std::filesystem::path& p) {
     const auto t = document_.timeline();
     if (!t || busy_) return;
-    error_.clear(); playback_.pause(); cursor_ = playback_.position(); opening_ = true;
+    error_.clear(); playback_.pause(); cursor_ = playback_.position(); opening_ = true; openingName_ = utf8(p.filename());
     const bool mix = selected();
     const Frame selectionAnchor = anchor_, selectionHead = head_;
     const Frame a = first(), b = last(), pos = std::min(cursor_, t->frames);
@@ -747,7 +747,7 @@ void Editor::playbackPanel(ImVec2 p, ImVec2 size) {
 }
 void Editor::waveform(ImVec2 p, ImVec2 size) {
     wavePos_ = p; waveSize_ = size;
-    auto t = document_.timeline(); if (!t) { emptyState(p, size); return; }
+    auto t = document_.timeline(); if (!t || (opening_ && busy_)) { emptyState(p, size); return; }
     auto d = drawList(); auto& io = ImGui::GetIO();
     const auto mouse = logical(io.MousePos);
     constexpr float ruler = 34, gutter = 46;
@@ -781,15 +781,16 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
     const int firstPixel = int(std::floor(rasterLeft));
     const int columns = std::max(1, int(std::ceil(rasterRight)) - firstPixel);
     const double samplesPerPixel = view_.span / columns;
-    const bool peaksReady = std::all_of(t->pieces.begin(), t->pieces.end(), [](const Piece& piece) { return !piece.source || piece.source->peaksReady(); });
+    const auto build = waveformBuild(t.get());
+    const bool peaksReady = build.ready;
     if (waveformTimeline_ != t.get() || waveformStart_ != view_.start || waveformSpan_ != view_.span || waveformColumns_ != columns ||
-        waveformRasterLeft_ != rasterLeft || waveformRasterRight_ != rasterRight || !waveformReady_) {
+        waveformRasterLeft_ != rasterLeft || waveformRasterRight_ != rasterRight || waveformReady_ != peaksReady) {
         waveformCache_.resize(std::size_t(columns) * t->channels);
         const auto frameAtEdge = [&](int x) {
             return view_.start + std::clamp((firstPixel + x - rasterLeft) / (rasterRight - rasterLeft), 0., 1.) * view_.span;
         };
         for (unsigned c = 0; c < t->channels; ++c) for (int x = 0; x < columns; ++x) {
-            waveformCache_[std::size_t(c) * columns + x] = waveformPeak(*t, frameAtEdge(x), frameAtEdge(x + 1), c);
+            waveformCache_[std::size_t(c) * columns + x] = waveformPeak(*t, frameAtEdge(x), frameAtEdge(x + 1), c, peaksReady);
         }
         waveformTimeline_ = t.get(); waveformStart_ = view_.start; waveformSpan_ = view_.span;
         waveformColumns_ = columns; waveformReady_ = peaksReady;
@@ -842,9 +843,19 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
         label({p.x + 9, y + laneH * .5f - 9}, "0", muted);
         if (laneH > 150) { label({p.x + 8, y + laneH * .13f}, "+1", muted); label({p.x + 8, y + laneH * .83f}, "-1", muted); }
     }
-    if (source_ && !source_->peaksReady()) {
-        std::string message = source_->peakProgress() < 0 ? "Peak cache unavailable. Zoom in for sample detail." : "Building waveform  " + decimal(source_->peakProgress() * 100, 0) + "%";
-        label({left + 20, top + 16}, message, muted);
+    if (!build.ready) {
+        const float boxWidth = std::min(360.f, width - 24);
+        const float x = left + (width - boxWidth) * .5f;
+        const float y = samplesPerPixel > 4 ? top + std::max(8.f, (bottom - top - 88) * .5f) : top + 8;
+        d.PushClipRect({left, top}, {right, bottom}, true);
+        d.AddRectFilled({x, y}, {x + boxWidth, y + 88}, panel, 6);
+        label({x + 12, y + 10}, build.building ? "Building waveform  " + decimal(build.progress * 100, 0) + "%" : "Waveform cache unavailable", teal);
+        label({x + 12, y + 36}, build.building ? "Playback and sample zoom are available." : "Zoom in for sample detail.", muted);
+        if (build.building) {
+            d.AddRectFilled({x + 12, y + 68}, {x + boxWidth - 12, y + 74}, line, 3);
+            d.AddRectFilled({x + 12, y + 68}, {x + 12 + (boxWidth - 24) * build.progress, y + 74}, teal, 3);
+        }
+        d.PopClipRect();
     }
     ImGui::SetCursorScreenPos(px({left, p.y}));
     ImGui::InvisibleButton("waveform", px({width, size.y}), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle | ImGuiButtonFlags_MouseButtonRight);
@@ -967,12 +978,12 @@ void Editor::overview(ImVec2 p, ImVec2 size) {
     }
     const int columns = std::max(1, int(std::ceil(size.x * dpi_.raster)));
     const float columnWidth = size.x / columns;
-    const bool ready = source_ && source_->peaksReady();
+    const bool ready = waveformBuild(t.get()).ready;
     const double total = view_.total;
     if (overviewTimeline_ != t.get() || overviewCache_.size() != std::size_t(columns) || overviewReady_ != ready || overviewExtent_ != total) {
         overviewExtent_ = total;
         overviewTimeline_ = t.get(); overviewReady_ = ready; overviewCache_.resize(columns);
-        for (int x = 0; x < columns; ++x) overviewCache_[x] = t->peak(Frame(double(x) / columns * total), Frame(double(x + 1) / columns * total), 0);
+        for (int x = 0; x < columns; ++x) overviewCache_[x] = ready ? t->peak(Frame(double(x) / columns * total), Frame(double(x + 1) / columns * total), 0) : Peak{};
     }
     envelopeUpper_.resize(columns); envelopeLower_.resize(columns);
     for (int x = 0; x < columns; ++x) {
@@ -1090,6 +1101,29 @@ void Editor::inspector(ImVec2 p, ImVec2 size) {
 }
 void Editor::emptyState(ImVec2 p, ImVec2 size) {
     auto d = drawList(); d.AddRectFilled(p, {p.x + size.x, p.y + size.y}, panel, 8);
+    if (opening_ && busy_) {
+        const float width = std::min(420.f, size.x - 32);
+        const float x = p.x + (size.x - width) * .5f;
+        const float y = p.y + std::max(8.f, (size.y - 150) * .5f);
+        ImGui::PushClipRect(px(p), px({p.x + size.x, p.y + size.y}), true);
+        label({x, y}, job_.get_stop_token().stop_requested() ? "Cancelling import..." : jobLabel_, teal);
+        const float progress = jobProgress_.load();
+        ImGui::SetCursorScreenPos(px({x, y + 30}));
+        ImGui::ProgressBar(progress > 0 && progress < 1 ? progress : -float(ImGui::GetTime()), px({width, 8}), "");
+        if (size.y >= 140) {
+            ImGui::PushClipRect(px({x, y + 48}), px({x + width, y + 72}), true);
+            label({x, y + 48}, openingName_, muted);
+            ImGui::PopClipRect();
+        }
+        if (size.y >= 110) {
+            ImGui::SetCursorScreenPos(px({x, y + (size.y >= 140 ? 90 : 52)}));
+            ImGui::BeginDisabled(job_.get_stop_token().stop_requested());
+            if (button("Cancel import", {140, 32})) job_.request_stop();
+            ImGui::EndDisabled();
+        }
+        ImGui::PopClipRect();
+        return;
+    }
     const float cx = p.x + size.x * .5f, cy = p.y + size.y * (compact_ ? .3f : .45f);
     if (compact_ && size.y < 190) {
         ImGui::SetCursorScreenPos(px({cx - 72.5f, p.y + (size.y - 44) * .5f}));
@@ -1287,7 +1321,7 @@ void Editor::modals() {
     ImGui::PopStyleVar();
     if (retryAfterPopup) retryAfterPopup();
 }
-bool Editor::animating() const { return ImGui::GetTime() - lastInteraction_ < .3 || ImGui::IsAnyItemActive() || playback_.playing() || busy_ || selecting_ || (source_ && !source_->peaksReady() && source_->peakProgress() >= 0) || view_.start != view_.targetStart || view_.span != view_.targetSpan; }
+bool Editor::animating() const { return ImGui::GetTime() - lastInteraction_ < .3 || ImGui::IsAnyItemActive() || playback_.playing() || busy_ || selecting_ || waveformBuild(document_.timeline().get()).building || view_.start != view_.targetStart || view_.span != view_.targetSpan; }
 void Editor::render() {
     if (jobDone_.exchange(false, std::memory_order_acquire)) {
         if (job_.joinable()) job_.join(); busy_.store(false);
@@ -1367,7 +1401,9 @@ void Editor::render() {
     }
     // Long filenames and operation messages cannot cover the audio properties.
     ImGui::PushClipRect(px({24, height - 36}), px({statusRight, height}), true);
-    label({24, height - 27}, busy_ ? jobLabel_ + "  " + decimal(jobProgress_.load() * 100, 0) + "%" : status_, busy_ ? teal : muted);
+    const auto build = waveformBuild(document_.timeline().get());
+    label({24, height - 27}, busy_ ? jobLabel_ + "  " + decimal(jobProgress_.load() * 100, 0) + "%" :
+        build.building ? "Building waveform  " + decimal(build.progress * 100, 0) + "%" : status_, busy_ || build.building ? teal : muted);
     ImGui::PopClipRect();
     modals(); ImGui::End();
     const std::string windowTitle = "ColdEdit - " + title_ + (document_.dirty() ? " *" : ""); glfwSetWindowTitle(window_, windowTitle.c_str());
@@ -1461,6 +1497,7 @@ void Editor::smokeInput(int frame) {
 }
 std::string Editor::diagnostics() const {
     std::ostringstream out;
+    const auto build = waveformBuild(document_.timeline().get());
     out << "{\n  \"ui_input_checks_passed\": " << (smokeBoundaryChecks_ ? (smokePassed() ? "true" : "false") : "null")
         << ",\n  \"selection_boundary_checks\": " << smokeBoundaryChecks_
         << ",\n  \"selection_boundaries_passed\": " << (smokeBoundaryChecks_ ? (smokeEdgesPassed_ ? "true" : "false") : "null")
@@ -1481,6 +1518,11 @@ std::string Editor::diagnostics() const {
         << ",\n  \"playing\": " << (playback_.playing() ? "true" : "false")
         << ",\n  \"position\": " << playback_.position()
         << ",\n  \"busy\": " << (busy_ ? "true" : "false")
+        << ",\n  \"opening\": " << (opening_ ? "true" : "false")
+        << ",\n  \"job_progress\": " << jobProgress_.load()
+        << ",\n  \"waveform_ready\": " << (build.ready ? "true" : "false")
+        << ",\n  \"waveform_building\": " << (build.building ? "true" : "false")
+        << ",\n  \"waveform_progress\": " << build.progress
         << ",\n  \"dirty\": " << (document_.dirty() ? "true" : "false")
         << ",\n  \"selection_start\": " << first()
         << ",\n  \"selection_end\": " << last()

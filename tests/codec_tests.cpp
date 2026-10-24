@@ -130,6 +130,35 @@ void tests(const std::filesystem::path& root) {
     }
     CHECK(web::audioBytes.load() == 0);
 }
+// Opt-in integration test: writes >4 GiB to temporary disk. Keep ordinary CI
+// small, but verify real 64-bit decode offsets, final samples and peak queries.
+void largeFileTests(const std::filesystem::path& root) {
+    auto marker = AudioFile::render(16, 48000, 2, [](Frame, Frame n, float* out) {
+        for (Frame i = 0; i < n; ++i) { out[i * 2] = .25f; out[i * 2 + 1] = -.5f; }
+    }, nullptr, {});
+    Timeline timeline;
+    const Frame boundary = Frame((1ull << 32) / 8);
+    timeline.pieces = {{nullptr, 0, boundary - 8}, {marker, 0, 16}}; timeline.rebuild();
+    const auto path = root / "over-4gib.flac";
+    std::cout << "Encoding large FLAC fixture..." << std::endl;
+    exportAudio(timeline, path, ExportFormat::FLAC16);
+    std::cout << "Decoding more than 4 GiB of float PCM..." << std::endl;
+    auto decoded = AudioFile::open(path);
+    CHECK(decoded->storageBytes() > (1ull << 32)); CHECK(decoded->frames == boundary + 8);
+    for (Frame frame : {boundary - 9, boundary - 1, boundary, boundary + 7})
+        for (unsigned c = 0; c < 2; ++c) CHECK(decoded->sample(frame, c) == timeline.sample(frame, c));
+    std::cout << "Building and checking large-file peaks..." << std::endl;
+    decoded->waitForPeaks(); CHECK(decoded->peaksReady()); CHECK(decoded->peakBytes() <= 32 * 1024 * 1024);
+    CHECK(decoded->peak(boundary - 4096, boundary + 8, 0).hi == .25f);
+    CHECK(decoded->peak(boundary - 4096, boundary + 8, 1).lo == -.5f);
+    decoded.reset();
+    // Repeat without a declared frame count to cover streaming growth checks.
+    auto unknown = read(path); unknownLength(unknown); save(root / "unknown-large.flac", unknown);
+    std::cout << "Decoding large FLAC without a declared length..." << std::endl;
+    decoded = AudioFile::open(root / "unknown-large.flac");
+    CHECK(decoded->storageBytes() > (1ull << 32)); CHECK(decoded->frames == boundary + 8);
+    CHECK(decoded->sample(boundary, 1) == -.5f);
+}
 int main(int argc, char** argv) {
     try {
         if (argc == 3 && std::string(argv[1]) == "--web-fixtures") {
@@ -143,7 +172,10 @@ int main(int argc, char** argv) {
             std::cout << "Generated web limit fixtures in " << root << '\n'; return 0;
         }
         auto root = std::filesystem::current_path() / ("coldedit-codecs-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-        std::filesystem::create_directory(root); tests(root); mp3ExportTests(root); std::filesystem::remove_all(root);
+        std::filesystem::create_directory(root);
+        if (argc == 2 && std::string(argv[1]) == "--large-file") largeFileTests(root);
+        else { tests(root); mp3ExportTests(root); }
+        std::filesystem::remove_all(root);
         std::cout << "PASS: FLAC and MP3 export/import, VBR/CBR, mono/stereo, resampling, short gapless selections, limits, cancellation, corruption, budget accounting.\n";
         return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

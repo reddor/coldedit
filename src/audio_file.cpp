@@ -25,6 +25,27 @@
 
 namespace coldedit {
 static std::atomic<std::uint64_t> renderedBytes{0};
+// Temporary PCM has no container size fields. Bound arithmetic and mappings by
+// the process address space and signed file offsets, not RIFF's 32-bit lengths.
+static constexpr auto storageLimit = std::min<std::uint64_t>(SIZE_MAX, INT64_MAX);
+#ifndef __EMSCRIPTEN__
+struct TemporaryAudio {
+    std::filesystem::path directory, file;
+    explicit TemporaryAudio(const char* kind) {
+        static std::atomic<unsigned> serial{0};
+        for (int attempt = 0; attempt < 32 && directory.empty(); ++attempt) {
+            auto candidate = std::filesystem::temp_directory_path() / (std::string("coldedit-") + kind + "-" +
+                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(serial++));
+            if (std::filesystem::create_directory(candidate)) directory = candidate;
+        }
+        if (directory.empty()) throw std::runtime_error("Cannot create temporary audio storage.");
+        file = directory / "audio.pcm";
+    }
+    ~TemporaryAudio() {
+        if (!directory.empty()) { std::error_code ec; std::filesystem::remove(file, ec); std::filesystem::remove(directory, ec); }
+    }
+};
+#endif
 struct AudioFile::Mapping {
     const std::uint8_t* bytes = nullptr;
     std::size_t size = 0;
@@ -44,8 +65,7 @@ struct AudioFile::Mapping {
 static std::uint16_t u16(const std::uint8_t* p) { return std::uint16_t(p[0] | (p[1] << 8)); }
 static std::uint32_t u32(const std::uint8_t* p) { return std::uint32_t(p[0]) | (std::uint32_t(p[1]) << 8) | (std::uint32_t(p[2]) << 16) | (std::uint32_t(p[3]) << 24); }
 
-std::shared_ptr<AudioFile> AudioFile::open(const std::filesystem::path& p, std::atomic<float>* progress, std::stop_token stop) {
-    if (stop.stop_requested()) throw std::runtime_error("Import cancelled.");
+std::shared_ptr<AudioFile> AudioFile::map(const std::filesystem::path& p) {
     auto a = std::shared_ptr<AudioFile>(new AudioFile);
     a->path = p;
     a->mapping_ = std::make_unique<Mapping>();
@@ -54,9 +74,9 @@ std::shared_ptr<AudioFile> AudioFile::open(const std::filesystem::path& p, std::
     m.file = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (m.file == INVALID_HANDLE_VALUE) throw std::runtime_error("Cannot open the file. Check its location and permissions.");
     LARGE_INTEGER size{};
-    if (!GetFileSizeEx(m.file, &size) || size.QuadPart < 12 || std::uint64_t(size.QuadPart) > SIZE_MAX) throw std::runtime_error("Invalid or unsupported file size.");
+    if (!GetFileSizeEx(m.file, &size) || size.QuadPart < 0 || std::uint64_t(size.QuadPart) > SIZE_MAX) throw std::runtime_error("Invalid or unsupported file size.");
     m.size = std::size_t(size.QuadPart);
-    m.map = CreateFileMappingW(m.file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    if (m.size) m.map = CreateFileMappingW(m.file, nullptr, PAGE_READONLY, 0, 0, nullptr);
     if (m.map) m.bytes = static_cast<const std::uint8_t*>(MapViewOfFile(m.map, FILE_MAP_READ, 0, 0, 0));
 #elif defined(__EMSCRIPTEN__)
     const auto bytes = std::filesystem::file_size(p);
@@ -78,17 +98,24 @@ std::shared_ptr<AudioFile> AudioFile::open(const std::filesystem::path& p, std::
 #else
     m.file = ::open(p.c_str(), O_RDONLY);
     struct stat st{};
-    if (m.file < 0 || fstat(m.file, &st) || st.st_size < 12 || std::uint64_t(st.st_size) > SIZE_MAX) throw std::runtime_error("Cannot open the audio file.");
+    if (m.file < 0 || fstat(m.file, &st) || st.st_size < 0 || std::uint64_t(st.st_size) > SIZE_MAX) throw std::runtime_error("Cannot open the audio file.");
     m.size = std::size_t(st.st_size);
-    void* v = mmap(nullptr, m.size, PROT_READ, MAP_PRIVATE, m.file, 0);
+    void* v = m.size ? mmap(nullptr, m.size, PROT_READ, MAP_PRIVATE, m.file, 0) : MAP_FAILED;
     if (v != MAP_FAILED) m.bytes = static_cast<const std::uint8_t*>(v);
 #endif
-    if (!m.bytes) throw std::runtime_error("Cannot map this file into memory.");
+    if (m.size && !m.bytes) throw std::runtime_error("Cannot map this file into memory.");
     a->fileBytes = m.size;
 #ifdef __EMSCRIPTEN__
     // The WASM buffer now owns the audio; release the temporary JS filesystem copy.
     if (p.parent_path() == "/imports") std::filesystem::remove(p);
 #endif
+    return a;
+}
+std::shared_ptr<AudioFile> AudioFile::open(const std::filesystem::path& p, std::atomic<float>* progress, std::stop_token stop) {
+    if (stop.stop_requested()) throw std::runtime_error("Import cancelled.");
+    auto a = map(p);
+    auto& m = *a->mapping_;
+    if (m.size < 12) throw std::runtime_error("Invalid audio file size.");
     if (std::memcmp(m.bytes, "RIFF", 4)) return a->decode(progress, stop);
     a->parse();
 #ifdef __EMSCRIPTEN__
@@ -99,11 +126,24 @@ std::shared_ptr<AudioFile> AudioFile::open(const std::filesystem::path& p, std::
     return a;
 }
 
+std::shared_ptr<AudioFile> AudioFile::mapFloat(const std::filesystem::path& p,
+    Frame count, unsigned rate, unsigned channels, std::stop_token stop) {
+    if (stop.stop_requested()) throw std::runtime_error("Operation cancelled.");
+    auto a = map(p);
+    if (a->mapping_->size != std::uint64_t(count) * channels * 4)
+        throw std::runtime_error("Incomplete temporary audio storage.");
+    a->data_ = a->mapping_->bytes; a->frames = count;
+    a->sampleRate = rate; a->channels = channels;
+    a->bits = 32; a->floating = true; a->blockAlign_ = channels * 4;
+    a->peakThread_ = std::jthread([ptr = a.get()](std::stop_token s) { ptr->buildPeaks(s); });
+    return a;
+}
+
 AudioFile::~AudioFile() {
     peakThread_.request_stop();
     if (peakThread_.joinable()) peakThread_.join();
     mapping_.reset();
-    if (!temporaryDirectory_.empty()) { std::error_code ec; std::filesystem::remove(temporaryDirectory_ / "audio.wav", ec); std::filesystem::remove(temporaryDirectory_, ec); }
+    if (!temporaryDirectory_.empty()) { std::error_code ec; std::filesystem::remove(temporaryDirectory_ / "audio.pcm", ec); std::filesystem::remove(temporaryDirectory_, ec); }
 }
 std::uint64_t AudioFile::processedBytes() { return renderedBytes.load(); }
 std::uint64_t AudioFile::storageBytes() const {
@@ -124,9 +164,7 @@ std::shared_ptr<AudioFile> AudioFile::decode(std::atomic<float>* progress, std::
     auto result = std::shared_ptr<AudioFile>(new AudioFile);
     DecodeInfo info;
     std::uint64_t written = 0;
-    // The native sink is bounded by RIFF, not by RAM. The browser sink has a
-    // reservation shared across all source/effect buffers, history and clipboard.
-    constexpr std::uint64_t diskLimit = UINT32_MAX - 44ull;
+    // The browser reservation is shared by sources, effects, history and clipboard.
 #ifdef __EMSCRIPTEN__
     result->mapping_ = std::make_unique<Mapping>();
     auto& m = *result->mapping_;
@@ -142,40 +180,25 @@ std::shared_ptr<AudioFile> AudioFile::decode(std::atomic<float>* progress, std::
         m.storage = std::move(storage); m.bytes = m.storage.get(); m.size = std::size_t(next);
     };
 #else
-    struct Temporary {
-        std::filesystem::path directory;
-        ~Temporary() { if (!directory.empty()) { std::error_code ec; std::filesystem::remove(directory / "audio.wav", ec); std::filesystem::remove(directory, ec); } }
-    } temp;
-    static std::atomic<unsigned> serial{0};
-    for (int attempt = 0; attempt < 32 && temp.directory.empty(); ++attempt) {
-        auto candidate = std::filesystem::temp_directory_path() / ("coldedit-decode-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(serial++));
-        if (std::filesystem::create_directory(candidate)) temp.directory = candidate;
-    }
-    if (temp.directory.empty()) throw std::runtime_error("Cannot create temporary decoded audio storage.");
-    std::ofstream output(temp.directory / "audio.wav", std::ios::binary);
-    auto put16 = [&](unsigned v) { output.put(char(v)); output.put(char(v >> 8)); };
-    auto put32 = [&](unsigned v) { put16(v); put16(v >> 16); };
+    TemporaryAudio temp("decode");
+    std::ofstream output(temp.file, std::ios::binary);
+    if (!output) throw std::runtime_error("Cannot open temporary audio storage.");
     auto capacity = [&](std::uint64_t bytes) {
-        if (bytes > diskLimit) throw std::runtime_error("Decoded audio exceeds the 4 GiB temporary audio limit. Open a shorter recording.");
+        if (bytes > storageLimit) throw std::runtime_error("Decoded audio exceeds this system's file mapping limit.");
     };
 #endif
     decodeAudio(mapping_->bytes, mapping_->size, [&](const DecodeInfo& metadata) {
         info = metadata;
-        if (info.frames > diskLimit / (info.channels * 4)) {
+        if (info.frames > storageLimit / (info.channels * 4)) {
 #ifdef __EMSCRIPTEN__
             web::checkAudio(web::audioLimit + 1);
 #endif
-            throw std::runtime_error("Decoded audio exceeds the 4 GiB temporary audio limit. Open a shorter recording.");
+            throw std::runtime_error("Decoded audio exceeds this system's file mapping limit.");
         }
         if (info.frames) capacity(info.frames * info.channels * 4);
-#ifndef __EMSCRIPTEN__
-        output.write("RIFF", 4); put32(0); output.write("WAVEfmt ", 8); put32(16);
-        put16(3); put16(info.channels); put32(info.rate); put32(info.rate * info.channels * 4);
-        put16(info.channels * 4); put16(32); output.write("data", 4); put32(0);
-#endif
     }, [&](const float* samples, unsigned count) {
         const auto bytes = std::uint64_t(count) * info.channels * 4;
-        if (bytes > diskLimit - written) throw std::runtime_error("Decoded audio exceeds the 4 GiB temporary audio limit.");
+        if (bytes > storageLimit - written) throw std::runtime_error("Decoded audio exceeds this system's file mapping limit.");
         capacity(written + bytes);
 #ifdef __EMSCRIPTEN__
         std::memcpy(m.storage.get() + written, samples, std::size_t(bytes));
@@ -191,9 +214,9 @@ std::shared_ptr<AudioFile> AudioFile::decode(std::atomic<float>* progress, std::
     result->bits = 32; result->floating = true; result->blockAlign_ = info.channels * 4;
     result->peakThread_ = std::jthread([ptr = result.get()](std::stop_token s) { ptr->buildPeaks(s); });
 #else
-    output.seekp(4); put32(unsigned(written + 36)); output.seekp(40); put32(unsigned(written));
     output.flush(); if (!output) throw std::runtime_error("Cannot flush decoded audio."); output.close();
-    result = AudioFile::open(temp.directory / "audio.wav", nullptr, stop);
+    if (!output) throw std::runtime_error("Cannot close decoded audio storage.");
+    result = mapFloat(temp.file, Frame(written / (info.channels * 4)), info.rate, info.channels, stop);
     result->temporaryDirectory_ = temp.directory; temp.directory.clear();
 #endif
     result->path = path; result->fileBytes = fileBytes;
@@ -202,12 +225,12 @@ std::shared_ptr<AudioFile> AudioFile::decode(std::atomic<float>* progress, std::
 }
 std::shared_ptr<AudioFile> AudioFile::render(Frame count, unsigned rate, unsigned channels,
     const std::function<void(Frame, Frame, float*)>& fill, std::atomic<float>* progress, std::stop_token stop) {
-    if (count < 0 || channels < 1 || channels > 2 || rate < 1000 || rate > 768000 || std::uint64_t(count) > (UINT32_MAX - 44) / (channels * 4))
+    if (count < 0 || channels < 1 || channels > 2 || rate < 1000 || rate > 768000 || std::uint64_t(count) > storageLimit / (channels * 4))
         throw std::runtime_error("This processing range is too large. Select a shorter range.");
-    const auto bytes = std::uint64_t(count) * channels * 4;
     auto cancelled = [&] { if (stop.stop_requested()) throw std::runtime_error("Processing cancelled."); };
     cancelled();
 #ifdef __EMSCRIPTEN__
+    const auto bytes = std::uint64_t(count) * channels * 4;
     auto a = std::shared_ptr<AudioFile>(new AudioFile); a->mapping_ = std::make_unique<Mapping>();
     a->mapping_->reservation.resize(bytes);
     renderedBytes.fetch_add(bytes); a->mapping_->processed = bytes;
@@ -216,23 +239,9 @@ std::shared_ptr<AudioFile> AudioFile::render(Frame count, unsigned rate, unsigne
     a->data_ = a->mapping_->bytes; a->frames = count; a->channels = channels; a->sampleRate = rate;
     a->bits = 32; a->floating = true; a->blockAlign_ = channels * 4; a->fileBytes = bytes;
 #else
-    struct Temporary {
-        std::filesystem::path directory, file;
-        ~Temporary() { if (!directory.empty()) { std::error_code ec; std::filesystem::remove(file, ec); std::filesystem::remove(directory, ec); } }
-    } temp;
-    static std::atomic<unsigned> serial{0};
-    for (int attempt = 0; attempt < 32 && temp.directory.empty(); ++attempt) {
-        const auto candidate = std::filesystem::temp_directory_path() / ("coldedit-process-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(serial++));
-        if (std::filesystem::create_directory(candidate)) temp.directory = candidate;
-    }
-    if (temp.directory.empty()) throw std::runtime_error("Cannot create temporary audio storage.");
-    temp.file = temp.directory / "audio.wav";
+    TemporaryAudio temp("process");
     std::ofstream output(temp.file, std::ios::binary);
-    auto u16 = [&](unsigned v) { output.put(char(v)); output.put(char(v >> 8)); };
-    auto u32 = [&](unsigned v) { u16(v); u16(v >> 16); };
-    output.write("RIFF", 4); u32(unsigned(bytes + 36)); output.write("WAVEfmt ", 8); u32(16);
-    u16(3); u16(channels); u32(rate); u32(rate * channels * 4); u16(channels * 4); u16(32);
-    output.write("data", 4); u32(unsigned(bytes));
+    if (!output) throw std::runtime_error("Cannot open temporary audio storage.");
 #endif
     std::array<float, 4096 * 2> block{};
     for (Frame at = 0; at < count; at += 4096) {
@@ -251,7 +260,8 @@ std::shared_ptr<AudioFile> AudioFile::render(Frame count, unsigned rate, unsigne
     a->buildPeaks(stop); cancelled();
 #else
     output.flush(); if (!output) throw std::runtime_error("Cannot flush processed audio."); output.close();
-    auto a = AudioFile::open(temp.file); a->temporaryDirectory_ = temp.directory; temp.directory.clear();
+    if (!output) throw std::runtime_error("Cannot close processed audio storage.");
+    auto a = mapFloat(temp.file, count, rate, channels, stop); a->temporaryDirectory_ = temp.directory; temp.directory.clear();
     while (!a->peaksReady() && a->peakProgress() >= 0) {
         if (stop.stop_requested()) { a->peakThread_.request_stop(); cancelled(); }
         std::this_thread::sleep_for(std::chrono::milliseconds(2));

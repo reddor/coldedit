@@ -53,6 +53,9 @@ private:
     std::atomic<bool> ready_{false};
     std::atomic<float> progress_{0};
     std::atomic<std::size_t> peakBytes_{0};
+    static std::shared_ptr<AudioFile> map(const std::filesystem::path& path);
+    static std::shared_ptr<AudioFile> mapFloat(const std::filesystem::path& path,
+        Frame frames, unsigned rate, unsigned channels, std::stop_token stop);
     void parse();
     std::shared_ptr<AudioFile> decode(std::atomic<float>* progress, std::stop_token stop);
     void buildPeaks(std::stop_token stop);

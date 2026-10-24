@@ -218,11 +218,12 @@ once in a new output directory, then run the isolated server/browser harness:
 build/coldedit_codec_tests.exe --web-fixtures artifacts/codec-fixtures
 node tests/run-web-tests.cjs web-codecs.cjs
 node tests/run-web-tests.cjs web-mp3.cjs
-node tests/run-web-tests.cjs web-memory.cjs web-waveform.cjs
+node tests/run-web-tests.cjs web-memory.cjs web-loading.cjs web-waveform.cjs
 ```
 
-This covers MP3 gapless import, edited-selection FLAC round trips at both bit
-depths, corrupt-file recovery, cancellation, exact/aggregate budget boundaries,
+This covers visible import/waveform progress and canvas cancellation, MP3 gapless
+import, edited-selection FLAC round trips at both bit depths, corrupt-file recovery,
+cancellation, exact/aggregate budget boundaries,
 and an over-limit FLAC stream with no reported sample count.
 The MP3 suite checks all export presets, selection and full-file downloads,
 gapless reimport, decoded signal, 96 -> 48 kHz mono resampling, cancellation,
