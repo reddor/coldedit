@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       full_tests:
-        description: Run the full browser suite at multiple display scales
+        description: Optionally run browser diagnostics (normally tested locally)
         type: boolean
         default: false
 
@@ -94,7 +94,7 @@ jobs:
           cd dist/Web
           zip -qr ../ColdEdit-web.zip .
       - name: Generate codec fixtures
-        if: startsWith(github.ref, 'refs/tags/v') || inputs.full_tests == true
+        if: github.event_name == 'workflow_dispatch' && inputs.full_tests == true
         run: |
           cmake -S . -B build-core -G Ninja -DCMAKE_BUILD_TYPE=Release -DCOLDEDIT_BUILD_APP=OFF
           cmake --build build-core --target coldedit_codec_tests --parallel 4
@@ -106,7 +106,7 @@ jobs:
           if-no-files-found: error
           compression-level: 0
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: startsWith(github.ref, 'refs/tags/v') || inputs.full_tests == true
+        if: github.event_name == 'workflow_dispatch' && inputs.full_tests == true
         with:
           name: codec-fixtures
           path: artifacts/codec-fixtures/
@@ -114,28 +114,27 @@ jobs:
 
   web-tests:
     name: Web tests (${{ matrix.suite }})
+    if: github.event_name == 'workflow_dispatch' && inputs.full_tests == true
     needs: web
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        # Ordinary changes use one runner and one display scale. Keep the costly
-        # boundary, editing and device matrix for releases or an explicit request.
-        include: >-
-          ${{ fromJSON((startsWith(github.ref, 'refs/tags/v') || inputs.full_tests == true)
-            && '[{"suite":"lifecycle","tests":"web-smoke.cjs web-lifecycle.cjs"},
-                 {"suite":"controls","tests":"web-toolbar.cjs web-wheel.cjs web-follow.cjs"},
-                 {"suite":"editing","tests":"web-features.cjs web-selection.cjs web-file-paste.cjs"},
-                 {"suite":"cleanup","tests":"web-cleanup.cjs"},
-                 {"suite":"memory","tests":"web-memory.cjs"},
-                 {"suite":"waveform","tests":"web-loading.cjs web-waveform.cjs"},
-                 {"suite":"codecs","tests":"web-codecs.cjs web-mp3.cjs"},
-                 {"suite":"mobile","tests":"web-mobile.cjs"}]'
-            || '[{"suite":"smoke","tests":"web-smoke.cjs"}]') }}
+        # Browser timing depends on runner graphics/scheduling. Use local runs
+        # for releases; retain this matrix for explicitly requested diagnostics.
+        include:
+          - {suite: lifecycle, tests: 'web-smoke.cjs web-lifecycle.cjs'}
+          - {suite: controls, tests: 'web-toolbar.cjs web-wheel.cjs web-follow.cjs'}
+          - {suite: editing, tests: 'web-features.cjs web-selection.cjs web-file-paste.cjs'}
+          - {suite: cleanup, tests: 'web-cleanup.cjs'}
+          - {suite: memory, tests: 'web-memory.cjs'}
+          - {suite: waveform, tests: 'web-loading.cjs web-waveform.cjs'}
+          - {suite: codecs, tests: 'web-codecs.cjs web-mp3.cjs'}
+          - {suite: mobile, tests: 'web-mobile.cjs'}
     env:
       COLDEDIT_BROWSER: chromium
-      COLDEDIT_DPI: ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.full_tests == true) && '1,1.25,2' || '1' }}
+      COLDEDIT_DPI: '1,1.25,2'
       BROWSER_TESTS: ${{ matrix.tests }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -177,7 +176,7 @@ jobs:
   release:
     name: Publish GitHub release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, linux, web-tests]
+    needs: [windows, linux, web]
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:

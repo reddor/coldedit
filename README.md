@@ -199,11 +199,11 @@ use the GitHub release for the Ubuntu 22.04 compatibility baseline.
 [GitHub Actions](https://github.com/reddor/coldedit/actions/workflows/build.yml)
 builds Windows, Linux and WebAssembly on pushes to `main`, pull requests, and
 manual runs. Documentation-only changes skip CI. Successful jobs retain
-downloadable package artifacts. Ordinary runs keep the fast native tests,
-Linux OpenGL smoke test and packaged relink check, plus one browser smoke test
-at 100% display scale. The full browser suite (editing, codecs, large-file
-boundaries, mobile and multiple display scales) runs only for release tags or
-when **Run workflow → full_tests** is selected. Superseded branch runs are
+downloadable package artifacts. CI runs the native tests, Linux OpenGL smoke test,
+packaged relink check, and all three platform builds. Run the browser suite locally
+before releasing (see [WEB.md](WEB.md)); browser timing on hosted runners is not a
+release gate. **Run workflow → full_tests** remains available for optional browser
+diagnostics at multiple display scales. Superseded branch runs are
 canceled automatically. Windows UI smoke tests remain
 available locally with `-Smoke` because hosted runners do not provide the
 required desktop OpenGL session.
@@ -216,7 +216,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-Only after all three builds and their tests pass, the workflow creates a
+Only after all three builds and the native checks pass, the workflow creates a
 GitHub Release with `ColdEdit-win64.zip`, `ColdEdit-linux-x64.tar.gz`,
 `ColdEdit-web.zip`, and `SHA256SUMS.txt`. No extra repository secrets are needed.
 The web ZIP can be deployed to [sqrctl.de/ce](https://sqrctl.de/ce/); the workflow

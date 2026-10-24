@@ -206,10 +206,11 @@ that browser with `cd tests && npx playwright install --with-deps chromium`.
 Tests require a running server. Native core
 tests also check exact size boundaries and overflow-safe export limits.
 
-Ordinary GitHub pushes and pull requests run only `web-smoke.cjs` at 100% scale.
-Release tags and manual runs with `full_tests` enabled run all suites, with
-100%, 125% and 200% scales where supported, plus the mobile viewport matrix.
-Documentation-only changes skip CI; the full suite also remains available locally.
+Run the browser suite locally before releases. Pushes, pull requests, and release
+tags run platform builds and native checks without browser jobs. Manual workflows
+with `full_tests` enabled can still run browser diagnostics, with 100%, 125% and
+200% scales where supported, plus the mobile viewport matrix. Browser CI is not
+a release gate. Documentation-only changes skip CI.
 
 For codec and decoded-memory verification, generate the small compressed fixtures
 once in a new output directory, then run the isolated server/browser harness:
@@ -219,6 +220,13 @@ build/coldedit_codec_tests.exe --web-fixtures artifacts/codec-fixtures
 node tests/run-web-tests.cjs web-codecs.cjs
 node tests/run-web-tests.cjs web-mp3.cjs
 node tests/run-web-tests.cjs web-memory.cjs web-loading.cjs web-waveform.cjs
+```
+
+For a full local browser run, after building the web app and generating the
+fixtures above (the harness starts and stops its own server):
+
+```text
+node tests/run-web-tests.cjs web-smoke.cjs web-lifecycle.cjs web-toolbar.cjs web-wheel.cjs web-follow.cjs web-features.cjs web-selection.cjs web-file-paste.cjs web-cleanup.cjs web-memory.cjs web-loading.cjs web-waveform.cjs web-codecs.cjs web-mp3.cjs web-mobile.cjs
 ```
 
 This covers visible import/waveform progress and canvas cancellation, MP3 gapless
