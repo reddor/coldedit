@@ -143,8 +143,63 @@ void historyAndExport() {
     rejects([&] { renderPitchTime(state, nullptr, cancel.get_token()); });
     CHECK(doc.timeline() == processed); CHECK(doc.historySize() == 3);
 }
+void selections() {
+    const auto source = signal(48000, 2);
+    auto state = PitchTimeState::identity(source, 120);
+    PitchSettings settings; settings.semitones = 12; settings.preserveFormants = false;
+    state.setSelectionPitch(12000, 60000, settings);
+    const auto selected = renderPitchTime(state);
+    CHECK(std::abs(frequency(*selected, .4, 1.1) - 880) < 4);
+    for (Frame f = 0; f < source->frames; ++f) if (f < 12000 || f >= 60000)
+        for (unsigned c = 0; c < source->channels; ++c) CHECK(selected->sample(f, c) == source->sample(f, c));
+    CHECK(state.selectionSettings(12000, 60000)->semitones == 12);
+    CHECK(!state.selectionSettings(0, 60000));
+    auto neutral = state; neutral.setSelectionPitch(12000, 60000, PitchSettings{});
+    const auto neutralAudio = renderPitchTime(neutral);
+    for (Frame f = 0; f < source->frames; ++f) CHECK(neutralAudio->sample(f, 0) == source->sample(f, 0));
+    state.time.bpm = 150; const auto warped = renderPitchTime(state);
+    auto baseline = state; baseline.rangeProcessing.clear(); const auto plain = renderPitchTime(baseline);
+    CHECK(std::abs(frequency(*warped, .35, .9) - 880) < 5);
+    for (Frame f = 0; f < plain->frames; ++f) if (f < 9600 || f >= 48000) CHECK(warped->sample(f, 0) == plain->sample(f, 0));
+    settings.semitones = -12; state.setSelectionPitch(24000, 36000, settings);
+    CHECK(state.rangeProcessing.size() == 3); state.validate();
+    state.setSelectionPitch(24000, 36000, {}); CHECK(state.rangeProcessing.size() == 2); state.validate();
+    state.setSelectionPitch(0, source->frames, {}); CHECK(state.rangeProcessing.empty());
+    // Selected notes and harmony voices have independent settings, retained by splitting/copying.
+    state = PitchTimeState::identity(source, 120);
+    auto analysis = std::make_shared<PitchAnalysis>(); analysis->sourceFrames = source->frames; analysis->sampleRate = 48000; analysis->hop = 480;
+    analysis->notes = {{0, 48000, 69, 0, .99f}, {48000, 96000, 69, 0, .99f}};
+    state.analysis = analysis; state.notes = analysis->notes; state.notes[0].shift = 2;
+    const auto before = renderPitchTime(state);
+    settings.semitones = 10; settings.formantSemitones = 3; settings.formantBaseHz = 440;
+    state.setSelectionPitch(0, 48000, settings, 0); CHECK(state.noteMidi(0) == 81); CHECK(state.noteMidi(1) == 69);
+    const auto notes = renderPitchTime(state); CHECK(std::abs(frequency(*notes, .25, .8) - 880) < 5);
+    for (Frame f = 48000; f < source->frames; ++f) CHECK(notes->sample(f, 0) == before->sample(f, 0));
+    CHECK(state.splitNote(0, 24000)); const auto split = renderPitchTime(state);
+    for (Frame f = 0; f < source->frames; ++f) CHECK(split->sample(f, 0) == notes->sample(f, 0));
+    CHECK(state.addHarmony({0, 1}, 7) == 1); CHECK(state.noteMidi(3) == 88);
+    CHECK(state.harmonies[0].processing.size() == 2); state.validate();
+    settings.formantSemitones = -4; state.setSelectionPitch(0, 24000, settings, 1);
+    CHECK(state.settingsAt(12000, 1).formantSemitones == -4); CHECK(state.settingsAt(12000, 0).formantSemitones == 3);
+    state.setSelectionPitch(0, 48000, {}, 0); CHECK(state.noteProcessing.empty()); CHECK(!state.harmonies[0].processing.empty());
+    // Formant-only selection processing changes the spectral envelope, not just metadata.
+    const auto vowel = signal(48000, 1, true); auto formant = PitchTimeState::identity(vowel, 120);
+    PitchSettings tone; tone.formantSemitones = 7; tone.formantBaseHz = 100;
+    formant.setSelectionPitch(12000, 60000, tone); const auto changed = renderPitchTime(formant);
+    CHECK(spectralCentre(*changed, 100) > spectralCentre(*vowel, 100) * 1.2);
+    for (Frame f = 60000; f < vowel->frames; ++f) CHECK(changed->sample(f, 0) == vowel->sample(f, 0));
+    Document doc; doc.open(source->pieces[0].source); doc.apply(selected, "Selected pitch"); doc.apply(warped, "Tempo");
+    CHECK(doc.undo()); CHECK(doc.timeline() == selected); CHECK(doc.redo()); CHECK(doc.timeline() == warped);
+    auto pending = previewPitchTime(*warped->pitchTime);
+    const auto path = std::filesystem::current_path() / "coldedit-pitch-selection-test.wav";
+    exportAudio(*pending, path, ExportFormat::Float32);
+    { const auto file = AudioFile::open(path); for (Frame f = 0; f < file->frames; ++f) CHECK(file->sample(f, 0) == warped->sample(f, 0)); }
+    std::filesystem::remove(path);
+    auto invalid = formant; invalid.rangeProcessing[0].last = source->frames + 1; rejects([&] { invalid.validate(); });
+    std::stop_source cancel; cancel.request_stop(); rejects([&] { renderPitchTime(formant, nullptr, cancel.get_token()); });
+}
 int main() try {
-    transposition(); formants(); historyAndExport();
+    transposition(); formants(); historyAndExport(); selections();
     std::cout << "Pitch/time: transposition, formants, stereo, resets, source retention, history, export and cancellation passed\n";
     return 0;
 } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

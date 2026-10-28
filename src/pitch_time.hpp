@@ -2,6 +2,7 @@
 #include "stretch.hpp"
 #include "pitch_analysis.hpp"
 #include <utility>
+#include <optional>
 
 namespace coldedit {
 struct PitchSettings {
@@ -14,11 +15,18 @@ struct PitchSettings {
     bool operator==(const PitchSettings&) const = default;
 };
 
+struct PitchRegion {
+    Frame first = 0, last = 0;
+    PitchSettings pitch;
+    Frame fadeFirst = 0, fadeLast = 0; // retain the envelope when a region is cut
+    double envelopeAt(double frame, unsigned sampleRate) const;
+};
+
 // Both controls always render from this retained source, never from a previous
 // processed result. A document/history revision owns one immutable state.
 struct PitchTimeState {
     using NoteKey = std::pair<unsigned, Frame>; // voice and source start survive timing edits
-    struct HarmonyVoice { std::vector<PitchNote> notes; double gain = .35; };
+    struct HarmonyVoice { std::vector<PitchNote> notes; double gain = .35; std::vector<PitchRegion> processing; };
     std::shared_ptr<const Timeline> source;
     StretchMap time;
     PitchSettings pitch;
@@ -26,6 +34,15 @@ struct PitchTimeState {
     std::vector<PitchNote> notes;
     // Empty slots are reused so removing a voice never renumbers other voices.
     std::vector<HarmonyVoice> harmonies;
+    std::vector<PitchRegion> rangeProcessing, noteProcessing;
+    const std::vector<PitchRegion>& processing(std::optional<unsigned> voice) const;
+    std::vector<PitchRegion>& processing(std::optional<unsigned> voice);
+    void setSelectionPitch(Frame first, Frame last, std::optional<PitchSettings> settings, std::optional<unsigned> voice = {});
+    std::optional<PitchSettings> selectionSettings(Frame first, Frame last, std::optional<unsigned> voice = {}) const;
+    bool hasSelectionPitch(Frame first, Frame last, std::optional<unsigned> voice = {}) const;
+    PitchSettings settingsAt(double frame, unsigned voice, bool selections = true) const;
+    double selectionEnvelopeAt(double frame, unsigned voice) const;
+    double noteMidi(std::size_t index) const;
     std::size_t noteCount() const;
     std::pair<unsigned, std::size_t> locateNote(std::size_t index) const;
     const std::vector<PitchNote>& voiceNotes(unsigned voice) const;
@@ -36,7 +53,7 @@ struct PitchTimeState {
     unsigned addHarmony(const std::vector<std::size_t>& indices, double semitones);
     static PitchTimeState identity(std::shared_ptr<const Timeline> source, double bpm);
     bool hasNoteEdits() const;
-    bool hasPitchChanges() const { return !pitch.identity() || hasNoteEdits(); }
+    bool hasPitchChanges() const { return !pitch.identity() || hasNoteEdits() || !rangeProcessing.empty() || !noteProcessing.empty(); }
     bool identity() const { return time.identity() && !hasPitchChanges(); }
     double noteShiftAt(double sourceFrame, unsigned voice = 0) const;
     bool splitNote(std::size_t index, Frame sourceFrame);

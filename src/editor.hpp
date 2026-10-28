@@ -107,7 +107,13 @@ private:
     std::array<ImVec2, 5> stretchControlPositions_{}; // logical positions for UI diagnostics
     bool pitchPopup_ = false;
     PitchSettings pitchInput_;
-    std::array<ImVec2, 7> pitchControlPositions_{};
+    bool pitchWholeFile_ = true, pitchSettingsMixed_ = false;
+    Frame pitchRangeFirst_ = 0, pitchRangeLast_ = 0;
+    std::set<PitchTimeState::NoteKey> pitchDialogNotes_;
+    std::shared_ptr<const Timeline> pitchDialogBase_;
+    void syncPitchDialog();
+    void applyPitchDialog(bool reset);
+    std::array<ImVec2, 8> pitchControlPositions_{};
     bool pitchView_ = false, pitchSnap_ = true;
     int pitchNoteSelected_ = -1, pitchNoteDragging_ = -1;
     using NoteKey = PitchTimeState::NoteKey;

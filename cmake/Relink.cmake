@@ -19,6 +19,7 @@ else()
   endif()
   install(FILES $<TARGET_FILE:glfw> DESTINATION relink/lib RENAME glfw${CMAKE_STATIC_LIBRARY_SUFFIX})
 endif()
+list(APPEND relink_objects pitch_editor.cpp)
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/relink-toolchain.txt"
   "System: ${CMAKE_SYSTEM_NAME} ${CMAKE_SYSTEM_PROCESSOR}\nC compiler: ${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}\nC++ compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}\nCMake: ${CMAKE_VERSION}\n")
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/relink-toolchain.txt" DESTINATION relink RENAME TOOLCHAIN.txt)

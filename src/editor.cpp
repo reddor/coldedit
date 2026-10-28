@@ -563,18 +563,75 @@ void Editor::stretchControls() {
 void Editor::openPitch() {
     const auto t = document_.timeline();
     if (busy_ || recording_ || !t || t->frames < 2) return;
-    pitchInput_ = t->pitchTime ? t->pitchTime->pitch : PitchSettings{};
-    pitchPopup_ = true;
+    pitchDialogNotes_ = pitchView_ ? pitchSelection_ : std::set<NoteKey>{};
+    pitchRangeFirst_ = pitchRangeLast_ = 0;
+    if (!pitchView_ && selected()) {
+        const auto sourceAt = [&](Frame frame) { return t->pitchTime ? t->pitchTime->time.sourceAt(double(frame)) : double(frame); };
+        const Frame end = t->pitchTime ? t->pitchTime->source->frames : t->frames;
+        pitchRangeFirst_ = std::clamp(Frame(std::llround(sourceAt(std::min(first(), t->frames)))), Frame(0), end);
+        pitchRangeLast_ = std::clamp(Frame(std::llround(sourceAt(std::min(last(), t->frames)))), pitchRangeFirst_, end);
+        if (pitchRangeFirst_ == pitchRangeLast_) { error_ = "Select a range within the audio."; return; }
+    }
+    pitchWholeFile_ = pitchDialogNotes_.empty() && pitchRangeFirst_ == pitchRangeLast_;
+    syncPitchDialog(); pitchPopup_ = true;
 }
+void Editor::syncPitchDialog() {
+    const auto t = document_.timeline(); if (!t) return;
+    pitchDialogBase_ = t; pitchSettingsMixed_ = false;
+    const auto initial = t->pitchTime ? std::optional<PitchTimeState>{} : PitchTimeState::identity(t, stretchBpm_);
+    const auto& state = t->pitchTime ? *t->pitchTime : *initial;
+    if (pitchWholeFile_) { pitchInput_ = state.pitch; return; }
+    pitchInput_ = {}; pitchInput_.preserveFormants = state.pitch.preserveFormants; pitchInput_.formantBaseHz = state.pitch.formantBaseHz;
+    std::optional<PitchSettings> current; bool firstTarget = true;
+    const auto include = [&](std::optional<PitchSettings> value) {
+        if (firstTarget) { current = value; firstTarget = false; }
+        else if (value != current) pitchSettingsMixed_ = true;
+        if (!value) pitchSettingsMixed_ = true;
+    };
+    if (pitchDialogNotes_.empty()) include(state.selectionSettings(pitchRangeFirst_, pitchRangeLast_));
+    else for (std::size_t i = 0; i < state.noteCount(); ++i) if (pitchDialogNotes_.contains(state.noteKey(i))) {
+        const auto& note = state.noteAt(i); include(state.selectionSettings(note.first, note.last, state.locateNote(i).first));
+    }
+    if (current) pitchInput_ = *current;
+}
+void Editor::applyPitchDialog(bool reset) try {
+    const auto t = document_.timeline(); if (busy_ || !t || t != pitchDialogBase_) return;
+    auto state = t->pitchTime ? *t->pitchTime : PitchTimeState::identity(t, stretchBpm_);
+    if (pitchWholeFile_) state.pitch = reset ? PitchSettings{} : pitchInput_;
+    else {
+        const std::optional<PitchSettings> settings = reset ? std::nullopt : std::optional<PitchSettings>{pitchInput_};
+        if (pitchDialogNotes_.empty()) state.setSelectionPitch(pitchRangeFirst_, pitchRangeLast_, settings);
+        else {
+            std::size_t count = 0;
+            for (std::size_t i = 0; i < state.noteCount(); ++i) if (pitchDialogNotes_.contains(state.noteKey(i))) {
+                const auto& note = state.noteAt(i); state.setSelectionPitch(note.first, note.last, settings, state.locateNote(i).first); ++count;
+            }
+            if (count != pitchDialogNotes_.size()) throw std::runtime_error("The selected notes changed. Close this dialog and select them again.");
+        }
+    }
+    applyPitchTime(std::move(state), reset ? "Reset pitch / formants" : "Pitch / formants", true, false,
+        [this] { syncPitchDialog(); if (pitchView_) fitNotes(); });
+} catch (const std::exception& e) { error_ = e.what(); }
 void Editor::pitchControls() {
     const auto t = document_.timeline();
     const auto recordControl = [&](std::size_t index) {
         const auto a = logical(ImGui::GetItemRectMin()), b = logical(ImGui::GetItemRectMax());
         pitchControlPositions_[index] = {a.x + 24, (a.y + b.y) * .5f};
     };
-    ImGui::TextWrapped("Transpose the whole file without changing its duration. Pitch and timing stay independently editable.");
+    if (t && t != pitchDialogBase_) syncPitchDialog();
+    const bool hasTarget = !pitchDialogNotes_.empty() || pitchRangeLast_ > pitchRangeFirst_;
+    ImGui::BeginDisabled(busy_);
+    if (hasTarget) {
+        if (ImGui::Checkbox("Whole file", &pitchWholeFile_)) syncPitchDialog(); recordControl(7);
+    }
+    ImGui::EndDisabled();
+    if (pitchWholeFile_) ImGui::TextWrapped("Whole file. Pitch and timing stay independently editable.");
+    else if (!pitchDialogNotes_.empty()) ImGui::TextWrapped("Selected notes: %zu (including selected harmony voices)", pitchDialogNotes_.size());
+    else if (t) ImGui::Text("Selected audio: %.3f - %.3f s", t && t->pitchTime ? t->pitchTime->time.outputAt(double(pitchRangeFirst_)) / t->sampleRate : double(pitchRangeFirst_) / t->sampleRate,
+        t && t->pitchTime ? t->pitchTime->time.outputAt(double(pitchRangeLast_)) / t->sampleRate : double(pitchRangeLast_) / t->sampleRate);
+    if (pitchSettingsMixed_) ImGui::TextWrapped("Mixed selection settings. Apply sets the values below for every selected region.");
     ImGui::BeginDisabled(busy_ || !t || t->frames < 2);
-    ImGui::TextUnformatted("Transpose (semitones)");
+    ImGui::TextUnformatted(pitchWholeFile_ ? "Transpose (semitones)" : "Additional transpose (semitones)");
     ImGui::SetNextItemWidth(-1); ImGui::InputDouble("##transpose", &pitchInput_.semitones, 1, 12, "%.2f");
     recordControl(0);
     ImGui::TextWrapped("-24 to +24. A value of 0.01 is one cent.");
@@ -592,24 +649,41 @@ void Editor::pitchControls() {
     std::string invalid;
     try { pitchInput_.validate(t ? t->sampleRate : 48000); }
     catch (const std::exception& e) { invalid = e.what(); }
-    const auto current = t && t->pitchTime ? t->pitchTime->pitch : PitchSettings{};
-    ImGui::BeginDisabled(!invalid.empty() || pitchInput_ == current);
+    PitchSettings current; bool mixed = false, canReset = false;
+    if (t) {
+        const auto initial = t->pitchTime ? std::optional<PitchTimeState>{} : PitchTimeState::identity(t, stretchBpm_);
+        const auto& state = t->pitchTime ? *t->pitchTime : *initial;
+        if (pitchWholeFile_) { current = state.pitch; canReset = current != PitchSettings{}; }
+        else {
+            current.preserveFormants = state.pitch.preserveFormants; current.formantBaseHz = state.pitch.formantBaseHz;
+            std::optional<PitchSettings> previous; bool firstTarget = true;
+            const auto include = [&](Frame first, Frame last, std::optional<unsigned> voice) {
+                const auto settings = state.selectionSettings(first, last, voice);
+                canReset |= state.hasSelectionPitch(first, last, voice);
+                if (firstTarget) { previous = settings; firstTarget = false; if (settings) current = *settings; }
+                else mixed |= previous != settings;
+                mixed |= !settings;
+            };
+            if (pitchDialogNotes_.empty()) include(pitchRangeFirst_, pitchRangeLast_, {});
+            else for (std::size_t i = 0; i < state.noteCount(); ++i) if (pitchDialogNotes_.contains(state.noteKey(i)))
+                include(state.noteAt(i).first, state.noteAt(i).last, state.locateNote(i).first);
+        }
+    }
+    ImGui::BeginDisabled(!invalid.empty() || (!mixed && pitchInput_ == current));
     if (button("Apply pitch / formants", {-1, 34}, true)) {
-        auto state = t->pitchTime ? *t->pitchTime : PitchTimeState::identity(t, stretchBpm_);
-        state.pitch = pitchInput_; applyPitchTime(std::move(state), "Pitch / formants");
+        applyPitchDialog(false);
     }
     recordControl(4);
     ImGui::EndDisabled();
     if (!invalid.empty()) ImGui::TextWrapped("%s", invalid.c_str());
-    ImGui::BeginDisabled(current == PitchSettings{});
+    ImGui::BeginDisabled(!canReset);
     if (button("Reset pitch / formants", {-1, 32})) {
-        auto state = *t->pitchTime; state.pitch = {};
-        applyPitchTime(std::move(state), "Reset pitch / formants");
+        applyPitchDialog(true);
     }
     recordControl(5);
     ImGui::EndDisabled();
     ImGui::EndDisabled();
-    ImGui::TextWrapped("Apply finishes rendering before changing the audio and adds one undo step. Reset keeps your time-stretch settings.");
+    ImGui::TextWrapped(pitchWholeFile_ ? "Apply renders one undo step. Reset keeps timing and selection settings." : "Selection settings add to whole-file pitch and note edits. Apply renders one undo step; Reset clears only this selection's dialog settings.");
 }
 void Editor::beatRuler(ImVec2 p, float width) {
     const auto t = document_.timeline(); if (!t) return;
@@ -786,8 +860,8 @@ void Editor::action(const std::string& name) try {
         status_ = "Copied " + timecode(double(last() - first()), t->sampleRate);
         if (name == "copy") return;
     }
-    if (name == "undo") { if (document_.undo()) afterEdit("Undo"); return; }
-    if (name == "redo") { if (document_.redo()) afterEdit("Redo"); return; }
+    if (name == "undo") { if (document_.undo()) { afterEdit("Undo"); if (pitchView_) fitNotes(); } return; }
+    if (name == "redo") { if (document_.redo()) { afterEdit("Redo"); if (pitchView_) fitNotes(); } return; }
     if (name == "normalize") { normalize(); return; }
     if (name == "paste" || name == "paste-replace") {
         if (clipboard_.empty()) return;
@@ -1608,7 +1682,7 @@ void Editor::modals() {
             pitchControlPositions_[6] = {a.x + 24, (a.y + b.y) * .5f};
         }
         ImGui::BeginDisabled(busy_);
-        if (button("Done", {-1, 34}) || (!busy_ && ImGui::IsKeyPressed(ImGuiKey_Escape, false))) ImGui::CloseCurrentPopup();
+        if (button("Done", {-1, 34}) || (!busy_ && ImGui::IsKeyPressed(ImGuiKey_Escape, false))) { pitchDialogBase_.reset(); ImGui::CloseCurrentPopup(); }
         ImGui::EndDisabled(); ImGui::EndPopup();
     }
     if (cleanupPopup_) { ImGui::OpenPopup("Audio cleanup"); cleanupPopup_ = false; }
@@ -1755,7 +1829,7 @@ void Editor::modals() {
         ImGui::TextUnformatted("TIMELINE"); ImGui::Spacing();
         ImGui::TextWrapped("Click the top ruler to place the play cursor without changing the selection. Drag inside the selection to move it; drag elsewhere on the ruler to pan.");
         ImGui::TextWrapped("T toggles time-stretch mode. Click its beat ruler to add anchors, drag to stretch, right-click to remove. Click BPM for tempo and transient detection.");
-        ImGui::TextWrapped("P opens pitch and formant controls for the whole file. Apply adds one undo step; pitch and timing render together from the retained source.");
+        ImGui::TextWrapped("P opens pitch and formant controls for selected notes or audio, or the whole file if nothing is selected. Apply adds one undo step; pitch and timing render together from the retained source.");
         ImGui::TextWrapped("N toggles the monophonic pitch editor. Detect notes, then drag vertically; Alt allows fine tuning. Correct snaps selected/all note centres to semitones. Escape clears the note selection or cancels a drag.");
         ImGui::TextWrapped("In the pitch editor: Ctrl-click toggles notes, Shift-click selects a range, dragging empty space selects a box, and Ctrl+A selects all notes. Vibrato scales measured variation: 0%% flat, 100%% original, 200%% double. S toggles the split tool; double-click also splits a note without changing its sound.");
         ImGui::TextWrapped("Add voice copies selected notes at the chosen interval (+4 major third, +7 fifth, +12 octave). Select notes in one harmony to set its voice level. Remove / Delete removes selected harmony notes. Copies support pitch, vibrato and split edits; Re-detect clears them.");
@@ -2034,6 +2108,22 @@ std::string Editor::diagnostics() const {
         out << "{\"x\":" << noteControlPositions_[i].x << ",\"y\":" << noteControlPositions_[i].y << "}";
     }
     const auto pitchState = document_.timeline() ? document_.timeline()->pitchTime : nullptr;
+    out << "],\n  \"pitch_scope\": " << std::quoted(pitchWholeFile_ ? "file" : pitchDialogNotes_.empty() ? "range" : "notes")
+        << ",\n  \"pitch_scope_notes\": " << pitchDialogNotes_.size()
+        << ",\n  \"pitch_scope_mixed\": " << (pitchSettingsMixed_ ? "true" : "false");
+    out << ",\n  \"pitch_regions\": [";
+    bool firstRegion = true;
+    const auto regions = [&](const auto& list, int voice) {
+        for (const auto& r : list) {
+            if (!firstRegion) out << ","; firstRegion = false;
+            out << "{\"voice\":" << voice << ",\"first\":" << r.first << ",\"last\":" << r.last
+                << ",\"semitones\":" << r.pitch.semitones << ",\"formants\":" << r.pitch.formantSemitones << "}";
+        }
+    };
+    if (pitchState) {
+        regions(pitchState->rangeProcessing, -1); regions(pitchState->noteProcessing, 0);
+        for (unsigned i = 0; i < pitchState->harmonies.size(); ++i) regions(pitchState->harmonies[i].processing, int(i + 1));
+    }
     out << "],\n  \"pitch_notes\": [";
     if (pitchState) for (std::size_t i = 0; i < pitchState->noteCount(); ++i) {
         if (i) out << ",";
@@ -2041,7 +2131,7 @@ std::string Editor::diagnostics() const {
         const auto voice = pitchState->locateNote(i).first;
         const auto position = i < notePositions_.size() ? notePositions_[i] : NotePosition{};
         out << "{\"first\":" << note.first << ",\"last\":" << note.last
-            << ",\"midi\":" << note.midi << ",\"shift\":" << note.shift
+            << ",\"midi\":" << note.midi << ",\"shift\":" << note.shift << ",\"audible_midi\":" << pitchState->noteMidi(i)
             << ",\"voice\":" << voice << ",\"gain\":" << (voice ? pitchState->harmonies[voice - 1].gain : 1)
             << ",\"inferred\":" << note.inferredFraction
             << ",\"vibrato\":" << note.vibrato << ",\"selected\":" << (pitchSelection_.contains(pitchState->noteKey(i)) ? "true" : "false")

@@ -105,8 +105,15 @@ browser-specific memory behavior. Smaller screens use a compact toolbar and a
   Undo/Redo, Cut/Copy/Paste, Delete, Trim, Fit, and Zoom to selection. Open and
   Export live in the menu. Playhead, duration, monitor gain, and output meters
   stay visible at the top of the right sidebar while the inspector scrolls.
-- **Pitch / formants** (`P`, or **Process > Pitch / formants**) transposes the
-  whole file by -24 to +24 semitones without changing duration. Decimal values
+- **Pitch / formants** (`P`, or **Process > Pitch / formants**) targets selected
+  notes in the pitch editor, or the selected audio range in the waveform view.
+  With no selection it targets the whole file; **Whole file** overrides a selection.
+  Selection settings remain editable, follow tempo changes, and add to global
+  transposition and existing note edits. Copied harmony notes inherit their settings;
+  split halves keep the current sound and can then be processed separately.
+  **Reset** clears only the current scope's dialog settings, keeping note dragging,
+  vibrato and timing. Mixed selection settings are identified before applying.
+  Transposition allows -24 to +24 semitones without changing duration. Decimal values
   allow fine tuning (0.01 semitone is one cent). **Preserve formants** is on by
   default; **Formant shift** adjusts tonal character independently by -12 to +12
   semitones. The optional voice/instrument pitch in Hz guides formant processing;
@@ -271,7 +278,7 @@ is reached. Ending screen sharing also stops and keeps the take.
 | I / O | Fade in / fade out selection |
 | J | Snap selection/cursor to nearby zero crossings |
 | T | Show / hide the time-stretch beat ruler |
-| P | Open whole-file pitch and formant controls |
+| P | Pitch and formants for selected notes/range, or the whole file |
 | N | Switch waveform / monophonic pitch editor |
 | Insert | Insert silence at cursor |
 | Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y | Undo / redo |

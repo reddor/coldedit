@@ -128,7 +128,7 @@ jobs:
           - {suite: controls, tests: 'web-toolbar.cjs web-wheel.cjs web-follow.cjs'}
           - {suite: editing, tests: 'web-features.cjs web-selection.cjs web-file-paste.cjs'}
           - {suite: cleanup, tests: 'web-cleanup.cjs'}
-          - {suite: stretch, tests: 'web-stretch.cjs web-pitch-time.cjs web-pitch-editor.cjs web-note-tools.cjs web-harmony.cjs'}
+          - {suite: stretch, tests: 'web-stretch.cjs web-pitch-time.cjs web-pitch-selections.cjs web-pitch-editor.cjs web-note-tools.cjs web-harmony.cjs'}
           - {suite: recording, tests: 'web-recording.cjs'}
           - {suite: memory, tests: 'web-memory.cjs'}
           - {suite: waveform, tests: 'web-loading.cjs web-waveform.cjs'}

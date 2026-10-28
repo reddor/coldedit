@@ -10,6 +10,79 @@ namespace {
 void checkStop(std::stop_token stop) {
     if (stop.stop_requested()) throw std::runtime_error("Pitch/time processing cancelled.");
 }
+const PitchRegion* regionAt(const std::vector<PitchRegion>& regions, double frame) {
+    auto it = std::upper_bound(regions.begin(), regions.end(), frame, [](double f, const PitchRegion& r) { return f < r.first; });
+    if (it == regions.begin()) return nullptr;
+    --it; return frame < it->last ? &*it : nullptr;
+}
+}
+double PitchRegion::envelopeAt(double frame, unsigned sampleRate) const {
+    if (frame < first || frame >= last) return 0;
+    const double fade = std::min(sampleRate * .01, (fadeLast - fadeFirst) * .25);
+    const double x = std::clamp(std::min(frame - fadeFirst, fadeLast - frame) / fade, 0., 1.);
+    return x * x * (3 - 2 * x);
+}
+const std::vector<PitchRegion>& PitchTimeState::processing(std::optional<unsigned> voice) const {
+    return !voice ? rangeProcessing : *voice ? harmonies.at(*voice - 1).processing : noteProcessing;
+}
+std::vector<PitchRegion>& PitchTimeState::processing(std::optional<unsigned> voice) {
+    return !voice ? rangeProcessing : *voice ? harmonies.at(*voice - 1).processing : noteProcessing;
+}
+void PitchTimeState::setSelectionPitch(Frame first, Frame last, std::optional<PitchSettings> settings, std::optional<unsigned> voice) {
+    if (!source || first < 0 || last <= first || last > source->frames) throw std::runtime_error("Select a range within the audio.");
+    if (settings) settings->validate(source->sampleRate);
+    auto& regions = processing(voice); std::vector<PitchRegion> next;
+    for (const auto& region : regions) {
+        if (region.last <= first || region.first >= last) next.push_back(region);
+        else {
+            if (region.first < first) { auto left = region; left.last = first; next.push_back(left); }
+            if (region.last > last) { auto right = region; right.first = last; next.push_back(right); }
+        }
+    }
+    if (settings) next.push_back({first, last, *settings, first, last});
+    std::sort(next.begin(), next.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    if (next.size() > PitchAnalysis::maxNotes) throw std::runtime_error("Too many pitch processing regions; reset some regions before adding more.");
+    regions = std::move(next);
+}
+std::optional<PitchSettings> PitchTimeState::selectionSettings(Frame first, Frame last, std::optional<unsigned> voice) const {
+    PitchSettings inherited; inherited.preserveFormants = pitch.preserveFormants; inherited.formantBaseHz = pitch.formantBaseHz;
+    const auto* start = regionAt(processing(voice), double(first)); const auto expected = start ? start->pitch : inherited;
+    Frame position = first;
+    for (const auto& region : processing(voice)) {
+        if (region.last <= first || region.first >= last) continue;
+        if (region.first > position && inherited != expected) return {};
+        if (region.pitch != expected) return {};
+        position = std::min(last, region.last);
+    }
+    if (position < last && inherited != expected) return {};
+    return expected;
+}
+bool PitchTimeState::hasSelectionPitch(Frame first, Frame last, std::optional<unsigned> voice) const {
+    const auto& regions = processing(voice);
+    return std::any_of(regions.begin(), regions.end(), [&](const auto& r) { return r.first < last && r.last > first; });
+}
+PitchSettings PitchTimeState::settingsAt(double frame, unsigned voice, bool selections) const {
+    auto value = pitch; value.semitones += noteShiftAt(frame, voice);
+    if (selections) for (const auto* regions : {&rangeProcessing, &processing(voice)}) if (const auto* r = regionAt(*regions, frame)) {
+        const double envelope = r->envelopeAt(frame, source->sampleRate);
+        value.semitones += r->pitch.semitones * envelope;
+        value.formantSemitones += r->pitch.formantSemitones * envelope;
+        value.preserveFormants = r->pitch.preserveFormants; value.formantBaseHz = r->pitch.formantBaseHz;
+    }
+    return value;
+}
+double PitchTimeState::selectionEnvelopeAt(double frame, unsigned voice) const {
+    double envelope = 0; auto effective = pitch;
+    for (const auto* regions : {&rangeProcessing, &processing(voice)}) if (const auto* r = regionAt(*regions, frame)) {
+        const double fade = r->envelopeAt(frame, source->sampleRate); envelope = std::max(envelope, fade);
+        effective.semitones += r->pitch.semitones * fade; effective.formantSemitones += r->pitch.formantSemitones * fade;
+        effective.preserveFormants = r->pitch.preserveFormants; effective.formantBaseHz = r->pitch.formantBaseHz;
+    }
+    return effective == pitch ? 0 : envelope;
+}
+double PitchTimeState::noteMidi(std::size_t index) const {
+    const auto [voice, i] = locateNote(index); const auto& note = voiceNotes(voice)[i]; const double at = (note.first + note.last) * .5;
+    return note.midi + note.shift + settingsAt(at, voice).semitones - noteShiftAt(at, voice);
 }
 void PitchSettings::validate(unsigned sampleRate) const {
     if (!std::isfinite(semitones) || semitones < -24 || semitones > 24)
@@ -58,7 +131,12 @@ unsigned PitchTimeState::addHarmony(const std::vector<std::size_t>& indices, dou
         if (std::abs(note.shift) > 24) throw std::runtime_error("This interval would exceed the +/-24 semitone note range.");
         copies.push_back(note);
     }
-    HarmonyVoice added{std::move(copies), sourceVoice ? harmonies[sourceVoice - 1].gain : .35};
+    HarmonyVoice added{std::move(copies), sourceVoice ? harmonies[sourceVoice - 1].gain : .35, {}};
+    for (const auto& note : added.notes) for (const auto& region : processing(sourceVoice)) {
+        if (region.first >= note.last || region.last <= note.first) continue;
+        auto copy = region; copy.first = std::max(copy.first, note.first); copy.last = std::min(copy.last, note.last);
+        added.processing.push_back(copy);
+    }
     if (destination > harmonies.size()) harmonies.push_back(std::move(added));
     else harmonies[destination - 1] = std::move(added);
     return destination;
@@ -68,6 +146,17 @@ void PitchTimeState::validate() const {
         source->frames != time.sourceFrames || source->sampleRate != time.sampleRate)
         throw std::runtime_error("Invalid pitch/time source.");
     time.validate(); pitch.validate(source->sampleRate);
+    const auto validateRegions = [&](const std::vector<PitchRegion>& regions) {
+        if (regions.size() > PitchAnalysis::maxNotes) throw std::runtime_error("Too many pitch processing regions.");
+        Frame end = 0;
+        for (const auto& r : regions) {
+            if (r.first < end || r.last <= r.first || r.last > source->frames || r.fadeFirst < 0 || r.fadeFirst > r.first || r.fadeLast < r.last || r.fadeLast > source->frames)
+                throw std::runtime_error("Invalid pitch processing region.");
+            r.pitch.validate(source->sampleRate); end = r.last;
+        }
+    };
+    validateRegions(rangeProcessing); validateRegions(noteProcessing);
+    for (const auto& voice : harmonies) validateRegions(voice.processing);
     if (harmonies.size() > PitchAnalysis::maxNotes || noteCount() > PitchAnalysis::maxNotes || (!analysis && noteCount() != 0) ||
         (analysis && (analysis->sourceFrames != source->frames || analysis->sampleRate != source->sampleRate ||
             analysis->contour.size() > PitchAnalysis::maxFrames)))
@@ -91,6 +180,7 @@ void PitchTimeState::validate() const {
     }
 }
 bool PitchTimeState::hasNoteEdits() const {
+    if (!noteProcessing.empty()) return true;
     for (const auto& voice : harmonies) if (!voice.notes.empty()) return true;
     return std::any_of(notes.begin(), notes.end(), [](const auto& note) { return note.shift != 0 || note.vibrato != 1; });
 }
@@ -172,6 +262,7 @@ std::shared_ptr<Timeline> renderPitchTime(const PitchTimeState& state, std::atom
         using Processor = signalsmith::stretch::SignalsmithStretch<float>;
         const auto voices = 1 + state.harmonies.size();
         std::vector<std::unique_ptr<Processor>> processors(voices);
+        std::vector<std::unique_ptr<Processor>> selectedProcessors(voices);
         std::vector<std::vector<std::pair<Frame, Frame>>> regions(voices);
         const bool dryLead = state.time.identity() && state.pitch.identity() &&
             std::none_of(state.notes.begin(), state.notes.end(), [](const auto& n) { return n.shift != 0 || n.vibrato != 1; });
@@ -183,6 +274,13 @@ std::shared_ptr<Timeline> renderPitchTime(const PitchTimeState& state, std::atom
             processor->setTransposeSemitones(float(state.pitch.semitones));
             processor->setFormantSemitones(float(state.pitch.formantSemitones), state.pitch.preserveFormants);
             processor->setFormantBase(float(state.pitch.formantBaseHz / source.sampleRate));
+            if (!state.rangeProcessing.empty() || !state.processing(voice).empty()) {
+                auto& selected = selectedProcessors[voice]; selected = std::make_unique<Processor>(0);
+                selected->presetDefault(int(source.channels), float(source.sampleRate));
+                selected->setTransposeSemitones(float(state.pitch.semitones));
+                selected->setFormantSemitones(float(state.pitch.formantSemitones), state.pitch.preserveFormants);
+                selected->setFormantBase(float(state.pitch.formantBaseHz / source.sampleRate));
+            }
             // Adjacent notes share an amplitude envelope, including split siblings.
             if (voice) for (const auto& note : state.voiceNotes(voice)) {
                 auto& spans = regions[voice];
@@ -194,10 +292,12 @@ std::shared_ptr<Timeline> renderPitchTime(const PitchTimeState& state, std::atom
         constexpr int blockSize = 256;
         std::array<std::vector<float>, 2> input;
         std::vector<std::array<std::vector<float>, 2>> outputs(voices);
-        std::vector<double> gain(voices);
+        std::vector<std::array<std::vector<float>, 2>> selectedOutputs(voices);
+        std::vector<double> gain(voices), selectedMix(voices);
         for (unsigned c = 0; c < source.channels; ++c) {
             input[c].resize(std::max(4096, stretch.inputLatency()));
             for (auto& output : outputs) output[c].resize(blockSize);
+            for (unsigned voice = 0; voice < voices; ++voice) if (selectedProcessors[voice]) selectedOutputs[voice][c].resize(blockSize);
             for (int i = 0; i < stretch.inputLatency(); ++i) input[c][i] = source.sample(i, c);
         }
         std::vector<double> boundaries{0};
@@ -206,6 +306,7 @@ std::shared_ptr<Timeline> renderPitchTime(const PitchTimeState& state, std::atom
         boundaries.push_back(mappedEnd);
         const double firstRate = state.time.sourceAt(boundaries[1]) / boundaries[1];
         for (auto& processor : processors) if (processor) processor->seek(input, stretch.inputLatency(), float(firstRate));
+        for (auto& processor : selectedProcessors) if (processor) processor->seek(input, stretch.inputLatency(), float(firstRate));
         Frame inputPosition = stretch.inputLatency(), processingPosition = 0;
         const double tailStart = boundaries[boundaries.size() - 2];
         const double endRate = (source.frames - state.time.sourceAt(tailStart)) / (mappedEnd - tailStart);
@@ -233,6 +334,14 @@ std::shared_ptr<Timeline> renderPitchTime(const PitchTimeState& state, std::atom
                 processors[voice]->setTransposeSemitones(float(state.pitch.semitones + state.noteShiftAt(at, voice)));
                 processors[voice]->process(input, inCount, outputs[voice], count);
             }
+            for (unsigned voice = 0; voice < voices; ++voice) if (selectedProcessors[voice]) {
+                const auto settings = state.settingsAt(at, voice);
+                auto& processor = *selectedProcessors[voice];
+                processor.setTransposeSemitones(float(settings.semitones));
+                processor.setFormantSemitones(float(settings.formantSemitones), settings.preserveFormants);
+                processor.setFormantBase(float(settings.formantBaseHz / source.sampleRate));
+                processor.process(input, inCount, selectedOutputs[voice], count);
+            }
             processingPosition = end; inputPosition = inputEnd;
             return count;
         };
@@ -247,6 +356,7 @@ std::shared_ptr<Timeline> renderPitchTime(const PitchTimeState& state, std::atom
                         const Frame frame = first + written + i;
                         const double at = state.time.sourceAt(double(frame));
                         std::fill(gain.begin(), gain.end(), 0.);
+                        for (unsigned voice = 0; voice < voices; ++voice) if (selectedProcessors[voice]) selectedMix[voice] = state.selectionEnvelopeAt(at, voice);
                         for (unsigned voice = 1; voice < processors.size(); ++voice) if (processors[voice]) {
                             const auto& spans = regions[voice];
                             auto span = std::upper_bound(spans.begin(), spans.end(), at,
@@ -258,8 +368,12 @@ std::shared_ptr<Timeline> renderPitchTime(const PitchTimeState& state, std::atom
                             gain[voice] = state.harmonies[voice - 1].gain * ramp * ramp * (3 - 2 * ramp);
                         }
                         for (unsigned c = 0; c < source.channels; ++c) {
-                            double value = dryLead ? source.sample(frame, c) : outputs[0][c][i];
-                            for (unsigned voice = 1; voice < processors.size(); ++voice) if (gain[voice]) value += outputs[voice][c][i] * gain[voice];
+                            const auto sample = [&](unsigned voice) {
+                                const double base = voice == 0 && dryLead ? source.sample(frame, c) : outputs[voice][c][i];
+                                return selectedMix[voice] ? base + (selectedOutputs[voice][c][i] - base) * selectedMix[voice] : base;
+                            };
+                            double value = sample(0);
+                            for (unsigned voice = 1; voice < processors.size(); ++voice) if (gain[voice]) value += sample(voice) * gain[voice];
                             data[std::size_t(written + i) * source.channels + c] = std::isfinite(value) ? float(value) : 0;
                         }
                     }

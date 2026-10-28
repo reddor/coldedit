@@ -24,8 +24,7 @@ void Editor::fitNotes() {
     if (!t || !t->pitchTime || t->pitchTime->notes.empty()) { pitchLow_ = 48; pitchHigh_ = 84; return; }
     double low = 127, high = 0;
     for (std::size_t i = 0; i < t->pitchTime->noteCount(); ++i) {
-        const auto& note = t->pitchTime->noteAt(i);
-        const double midi = note.midi + note.shift + t->pitchTime->pitch.semitones;
+        const double midi = t->pitchTime->noteMidi(i);
         low = std::min(low, midi); high = std::max(high, midi);
     }
     const double span = std::max(12., high - low + 8), centre = (high + low) * .5;
@@ -41,7 +40,7 @@ void Editor::detectNotes() try {
         *analysis = analyzePitch(*source, &jobProgress_, stop);
     }, [this, before, state, analysis]() mutable {
         if (document_.timeline() != before) return;
-        state.analysis = analysis; state.notes = analysis->notes; state.harmonies = {};
+        state.analysis = analysis; state.notes = analysis->notes; state.harmonies = {}; state.noteProcessing.clear();
         // Re-detection explicitly resets note edits, and may therefore need DSP.
         const bool render = before->pitchTime && before->pitchTime->hasNoteEdits();
         applyPitchTime(std::move(state), "Detect notes", render);
@@ -56,10 +55,13 @@ void Editor::correctNotes(bool reset) {
     for (std::size_t i = 0; i < state.noteCount(); ++i) {
         if (!pitchSelection_.empty() && !pitchSelection_.contains(state.noteKey(i))) continue;
         auto& note = state.noteAt(i);
-        const double audible = note.midi + note.shift + state.pitch.semitones;
+        const double audible = state.noteMidi(i);
         const double shift = reset ? 0 : std::clamp(note.shift + std::round(audible) - audible, -24., 24.);
         changed |= std::abs(shift - note.shift) > 1e-7; note.shift = shift;
-        if (reset) { changed |= note.vibrato != 1; note.vibrato = 1; }
+        if (reset) {
+            changed |= note.vibrato != 1 || state.hasSelectionPitch(note.first, note.last, state.locateNote(i).first); note.vibrato = 1;
+            state.setSelectionPitch(note.first, note.last, {}, state.locateNote(i).first);
+        }
     }
     if (changed) applyPitchTime(std::move(state), reset ? "Reset note pitch" : "Correct note pitch");
 }
@@ -125,7 +127,8 @@ void Editor::removeHarmonyNotes() {
     const auto t = document_.timeline(); if (busy_ || !t || !t->pitchTime || pitchSelection_.empty()) return;
     auto state = *t->pitchTime; bool changed = false;
     for (unsigned voice = 1; voice <= state.harmonies.size(); ++voice) {
-        changed |= std::erase_if(state.voiceNotes(voice), [&](const PitchNote& note) { return pitchSelection_.contains({voice, note.first}); }) != 0;
+        changed |= std::erase_if(state.voiceNotes(voice), [&](const PitchNote& note) { if (!pitchSelection_.contains({voice, note.first})) return false;
+            state.setSelectionPitch(note.first, note.last, {}, voice); return true; }) != 0;
         if (state.voiceNotes(voice).empty()) state.harmonies[voice - 1].gain = .35;
     }
     if (changed) applyPitchTime(std::move(state), "Remove harmony notes");
@@ -273,7 +276,7 @@ void Editor::pitchEditor(ImVec2 p, ImVec2 size) {
             const bool chosen = pitchSelection_.contains(displayed->noteKey(i));
             if (chosen != bool(selectedPass)) continue;
             const auto& note = displayed->noteAt(i);
-            const double midi = note.midi + note.shift + displayed->pitch.semitones;
+            const double midi = displayed->noteMidi(i);
             const float a = xAt(outputAt(double(note.first))), b = xAt(outputAt(double(note.last))), y = yAt(midi);
             const float h = std::clamp(height / float(pitchHigh_ - pitchLow_) * .72f, 5.f, 30.f);
             notePositions_[i] = {{(a + b) * .5f, y}, h};
@@ -304,8 +307,7 @@ void Editor::pitchEditor(ImVec2 p, ImVec2 size) {
                 while (noteAt != voiceNotes.end() && noteAt->last <= it->sourceFrame) ++noteAt;
                 const int noteIndex = noteAt != voiceNotes.end() && noteAt->first <= it->sourceFrame ? int(noteAt - voiceNotes.begin()) : -1;
                 if (voice && noteIndex < 0) { connected = false; continue; }
-                const double shift = displayed->noteShiftAt(double(it->sourceFrame), voice);
-                const double midi = it->midi + displayed->pitch.semitones + shift;
+                const double midi = it->midi + displayed->settingsAt(double(it->sourceFrame), voice).semitones;
                 const ImVec2 point{xAt(outputAt(double(it->sourceFrame))), yAt(midi)};
                 // Never draw a vertical connector across a note boundary or a
                 // remaining discontinuity, even when decimating a zoomed-out view.
@@ -352,7 +354,7 @@ void Editor::pitchEditor(ImVec2 p, ImVec2 size) {
             const auto& note = displayed->noteAt(hot);
             ImGui::SetMouseCursor(pitchSplitMode_ ? ImGuiMouseCursor_Hand : ImGuiMouseCursor_ResizeNS);
             ImGui::SetTooltip("%s / %s / %+.1f cents / vibrato %.0f%% / estimated %.0f%%\nDrag to transpose selection. Alt: fine tuning. Escape: cancel.\nCtrl-click: toggle; Shift-click: range; drag empty space: box select.\nDouble-click or Split tool: split here. Ctrl+A: all notes.\nRight-click overlapping notes to choose a voice.",
-                noteName(note.midi + note.shift + displayed->pitch.semitones).c_str(),
+                noteName(displayed->noteMidi(hot)).c_str(),
                 displayed->locateNote(hot).first ? ("Harmony " + std::to_string(displayed->locateNote(hot).first)).c_str() : "Original", note.shift * 100, note.vibrato * 100, note.inferredFraction * 100);
         }
         if (ImGui::IsMouseClicked(1) && !hitNotes.empty() && pitchNoteDragging_ < 0) {
@@ -426,15 +428,15 @@ void Editor::pitchEditor(ImVec2 p, ImVec2 size) {
         } else if (ImGui::IsMouseDown(0)) {
             if (ImGui::IsMouseDragging(0)) {
                 pitchDragMoved_ = true;
-                const auto& note = t->pitchTime->noteAt(pitchNoteDragging_);
-                double target = note.midi + displayed->pitch.semitones + pitchDragOriginal_ + (pitchDragY_ - mouse.y) / height * (pitchHigh_ - pitchLow_);
+                const double baseMidi = t->pitchTime->noteMidi(pitchNoteDragging_) - pitchDragOriginal_;
+                double target = baseMidi + pitchDragOriginal_ + (pitchDragY_ - mouse.y) / height * (pitchHigh_ - pitchLow_);
                 if (pitchSnap_ && !io.KeyAlt) target = std::round(target);
                 double low = -48, high = 48;
                 for (std::size_t i = 0; i < t->pitchTime->noteCount(); ++i) if (pitchSelection_.contains(t->pitchTime->noteKey(i))) {
                     const auto& selected = t->pitchTime->noteAt(i);
                     low = std::max(low, -24 - selected.shift); high = std::min(high, 24 - selected.shift);
                 }
-                pitchDragShift_ = pitchDragOriginal_ + std::clamp(target - note.midi - displayed->pitch.semitones - pitchDragOriginal_, low, high);
+                pitchDragShift_ = pitchDragOriginal_ + std::clamp(target - baseMidi - pitchDragOriginal_, low, high);
             }
         } else {
             const int index = pitchNoteDragging_; pitchNoteDragging_ = -1; pitchDragBase_.reset();

@@ -47,8 +47,13 @@ audio renders in the background. The editor stays interactive, and exports wait
 for finished audio. At least two anchors are needed to stretch; outer audio
 keeps its length when an anchor moves. BPM changes scale the entire file.
 
-**Pitch / formants** (`P`) applies whole-file transposition and formant changes
-using the same engine as time stretching. Apply renders before committing one
+**Pitch / formants** (`P`) processes selected pitch-editor notes (including
+harmonies), or the selected waveform range. With no selection it targets the
+whole file; the dialog's **Whole file** checkbox overrides the selection.
+Selection settings add to global transposition and note edits, remain editable,
+follow tempo changes and are inherited by copied/split notes. Reset clears only
+the current scope's dialog settings. Mixed settings are identified in the dialog.
+All scopes use the same engine as time stretching. Apply renders before committing one
 undo step; cancellation leaves the previous audio and history intact. With pitch
 or formant changes active, stretch drags preview the waveform and render audio
 on release. Pitch and timing have independent reset controls and share a retained
@@ -275,6 +280,7 @@ node tests/web-features.cjs
 node tests/web-cleanup.cjs
 node tests/web-stretch.cjs
 node tests/web-pitch-time.cjs
+node tests/web-pitch-selections.cjs
 node tests/web-pitch-editor.cjs
 node tests/web-note-tools.cjs
 node tests/web-harmony.cjs
@@ -310,7 +316,7 @@ For a full local browser run, after building the web app and generating the
 fixtures above (the harness starts and stops its own server):
 
 ```text
-node tests/run-web-tests.cjs web-smoke.cjs web-lifecycle.cjs web-toolbar.cjs web-wheel.cjs web-follow.cjs web-features.cjs web-selection.cjs web-file-paste.cjs web-cleanup.cjs web-stretch.cjs web-pitch-time.cjs web-pitch-editor.cjs web-note-tools.cjs web-harmony.cjs web-memory.cjs web-loading.cjs web-waveform.cjs web-codecs.cjs web-mp3.cjs web-mobile.cjs
+node tests/run-web-tests.cjs web-smoke.cjs web-lifecycle.cjs web-toolbar.cjs web-wheel.cjs web-follow.cjs web-features.cjs web-selection.cjs web-file-paste.cjs web-cleanup.cjs web-stretch.cjs web-pitch-time.cjs web-pitch-selections.cjs web-pitch-editor.cjs web-note-tools.cjs web-harmony.cjs web-memory.cjs web-loading.cjs web-waveform.cjs web-codecs.cjs web-mp3.cjs web-mobile.cjs
 ```
 
 This covers visible import/waveform progress and canvas cancellation, MP3 gapless
