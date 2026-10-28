@@ -15,6 +15,85 @@ duration in compatible players. MP3 preserves supported rates and resamples othe
 rates as shown in the inspector; see README.md for the rate policy.
 Choose **ColdEdit > Export format**, then export the file or selection.
 
+## Record audio
+
+Click the red record button, choose **ColdEdit > Record audio**, or press
+**Shift+R**. Choose **Microphone** to request microphone access, or
+**System / tab audio** to open the browser's screen-sharing picker. Enable
+**Share audio** for the chosen tab, window or screen. Available audio sources
+depend on the browser and operating system; requesting system audio does not
+guarantee it is offered. A share without an audio track is rejected with guidance.
+See the [Screen Capture specification](https://w3c.github.io/mediacapture-screen-share/).
+
+The recorder shows elapsed audio time and input level. **Stop and keep** opens
+the take as a new unsaved document; **Discard take** keeps the previous document.
+Ending sharing also stops and keeps the recording. Existing unsaved edits prompt
+for export before recording. Export the finished take to save it. No video is
+stored and no audio is uploaded or monitored through speakers.
+
+Microphone capture is mono; shared audio is stereo. Both use float PCM at the
+capture AudioContext's sample rate. Capture runs in an AudioWorklet and streams
+bounded blocks into the shared audio budget, including the previous document.
+Reaching the budget or falling behind stops capture and keeps the received audio.
+Recording does not use the 64 MiB file-import limit; normal export limits apply.
+Cancelling, stopping, or failing releases all microphone and screen tracks.
+Recording requires HTTPS or localhost, AudioWorklet, and the relevant browser
+capture API. `tests/web-recording.cjs` covers real worklet capture/export, a fake
+browser microphone, permission failures, missing audio, cancellation, ended
+tracks, unsaved changes, and the compact layout.
+
+Time-stretch edits use an immediate resampled audition while pitch-preserving
+audio renders in the background. The editor stays interactive, and exports wait
+for finished audio. At least two anchors are needed to stretch; outer audio
+keeps its length when an anchor moves. BPM changes scale the entire file.
+
+**Pitch / formants** (`P`) applies whole-file transposition and formant changes
+using the same engine as time stretching. Apply renders before committing one
+undo step; cancellation leaves the previous audio and history intact. With pitch
+or formant changes active, stretch drags preview the waveform and render audio
+on release. Pitch and timing have independent reset controls and share a retained
+source. Exports include both. Processing uses the shared audio budget, including
+retained sources and undo audio. The controls remain session-only.
+
+**Pitch editor** (`N`) shares the native monophonic detector and draggable note
+view. Choose **Detect notes**, drag vertically with semitone snapping (Alt for
+fine tuning), or use **Correct all / note**. Escape cancels a drag or deselects
+the note. Detection runs on a cancellable worker; releasing a changed note
+renders through the shared pitch/time engine before creating one undo step.
+Corrections preserve the source contour's vibrato, use the global formant
+settings, follow timing changes and appear in exports. Analysis targets single
+voices/instruments at 50-1200 Hz; detecting chords and mixes is unsupported. Note edits
+and analysis are session-only. Re-detect resets note edits.
+Uncertain audible regions use nearby sustained notes as pitch estimates,
+shown by an amber dashed contour. A separate short-window silence check keeps
+quiet gaps empty. Brief outliers are rejected without flattening vibrato or
+sustained note changes; the curve also breaks at note boundaries. Estimated
+regions can be dragged, corrected, undone and exported with the rest of a note.
+Ctrl-click toggles notes, Shift-click selects a range, and dragging empty space
+draws a selection box. Ctrl+A / **All notes** selects all. Group dragging keeps
+intervals intact and commits one undo step. **Vibrato** scales measured pitch
+variation (including bends) from 0% flat through 100% original to 200% double;
+release to apply to the selected notes, or all if none are selected. Ctrl-click
+the slider to type a value; Escape cancels a gesture. **Split** (`S`) plus a
+click, or a double-click, splits a note with at least 20 ms on each side. The
+split preserves the current sound and settings, supports independent editing
+of the halves, and follows time warps. Reset keeps splits; Re-detect clears them.
+
+**Add voice** copies selected notes at the interval beside the button; no
+selection copies all original notes. Use +3/+4 for thirds, +7 for a fifth,
++12 for an octave, or negative intervals for lower harmonies. Select notes
+from one voice to duplicate. There is no separate voice-count limit; original
+notes, copies and split halves share the 8192-note budget. Splitting stays in
+the same voice.
+Purple notes labelled H1, H2, and so on support dragging, vibrato, splitting and multi-selection.
+Right-click overlapping notes to choose which voice to select and drag.
+Select notes in one harmony to set its entire voice's **Lvl** (35% initially;
+0% mutes it). **Remove** / Delete / Backspace removes selected copies, retaining
+original notes. These edits use the shared timing/formant engine, undo and
+export path; Re-detect clears added voices. Each voice renders from the original
+source and mixes into a single output, retaining float headroom. This builds
+chords from a single voice; polyphonic source separation is not included.
+
 Selection dragging, retained ranges after Cut/Delete, Save selection, and
 additive Paste into selection share the native implementation. Mixing uses the
 same shared audio budget as imports and filters, including undo history (128 MiB
@@ -194,6 +273,11 @@ node tests/web-wheel.cjs
 node tests/web-follow.cjs
 node tests/web-features.cjs
 node tests/web-cleanup.cjs
+node tests/web-stretch.cjs
+node tests/web-pitch-time.cjs
+node tests/web-pitch-editor.cjs
+node tests/web-note-tools.cjs
+node tests/web-harmony.cjs
 node tests/web-selection.cjs
 node tests/web-file-paste.cjs
 node tests/web-mobile.cjs
@@ -226,7 +310,7 @@ For a full local browser run, after building the web app and generating the
 fixtures above (the harness starts and stops its own server):
 
 ```text
-node tests/run-web-tests.cjs web-smoke.cjs web-lifecycle.cjs web-toolbar.cjs web-wheel.cjs web-follow.cjs web-features.cjs web-selection.cjs web-file-paste.cjs web-cleanup.cjs web-memory.cjs web-loading.cjs web-waveform.cjs web-codecs.cjs web-mp3.cjs web-mobile.cjs
+node tests/run-web-tests.cjs web-smoke.cjs web-lifecycle.cjs web-toolbar.cjs web-wheel.cjs web-follow.cjs web-features.cjs web-selection.cjs web-file-paste.cjs web-cleanup.cjs web-stretch.cjs web-pitch-time.cjs web-pitch-editor.cjs web-note-tools.cjs web-harmony.cjs web-memory.cjs web-loading.cjs web-waveform.cjs web-codecs.cjs web-mp3.cjs web-mobile.cjs
 ```
 
 This covers visible import/waveform progress and canvas cancellation, MP3 gapless

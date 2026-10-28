@@ -109,6 +109,7 @@ void Editor::updateDpi(float contentScale, float framebufferScale) {
 #endif
 }
 Editor::~Editor() {
+    pitchTimeRenderer_.suspend();
     job_.request_stop(); if (job_.joinable()) job_.join();
     playback_.setTimeline(nullptr);
     clipboard_.clear(); document_ = Document{}; source_.reset();
@@ -133,6 +134,7 @@ bool Editor::iconButton(const char* id, int icon, bool active, const char* toolt
     if (icon == 2) d.AddRectFilled({x - 6, y - 6}, {x + 6, y + 6}, col, 1);
     if (icon == 3) { d.AddLine({x - 7, y - 7}, {x - 7, y + 7}, col, 2); d.AddTriangleFilled({x + 6, y - 7}, {x + 6, y + 7}, {x - 4, y}, col); }
     if (icon == 4) { d.AddRect({x - 9, y - 6}, {x + 9, y + 6}, col, 4, 0, 1.7f); d.AddTriangleFilled({x + 5, y - 10}, {x + 11, y - 6}, {x + 5, y - 2}, col); }
+    if (icon == 5) d.list->AddCircleFilled(px({x, y}), px(7), IM_COL32(241, 106, 115, 255));
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tooltip);
     return pressed;
 }
@@ -181,6 +183,8 @@ bool Editor::toolButton(const char* id, ToolIcon icon, const char* caption, cons
     return pressed;
 }
 void Editor::requestOpen(const std::filesystem::path& p) {
+    if (recording_) return;
+    pendingRecord_ = false;
     if (busy_) { status_ = "Finish or cancel the current operation before opening another file."; return; }
     if (document_.dirty()) { pendingPath_ = p; pendingClose_ = false; confirmDiscard_ = true; }
     else openNow(p);
@@ -195,6 +199,7 @@ void Editor::openNow(const std::filesystem::path& p) {
     }, [this, p, result] { acceptFile(std::move(*result), p); });
 }
 void Editor::requestPasteFile(const std::filesystem::path& p) {
+    if (recording_) return;
     const auto t = document_.timeline();
     if (!t || busy_) return;
     error_.clear(); playback_.pause(); cursor_ = playback_.position(); opening_ = true; openingName_ = utf8(p.filename());
@@ -230,14 +235,24 @@ void Editor::requestPasteFile(const std::filesystem::path& p) {
         }
     });
 }
-void Editor::acceptFile(std::shared_ptr<AudioFile> file, const std::filesystem::path& p) {
+void Editor::acceptFile(std::shared_ptr<AudioFile> file, const std::filesystem::path& p, bool saved) {
 #ifdef __EMSCRIPTEN__
         // Do not retain another document's audio through the browser clipboard.
         clipboard_.clear();
 #endif
-        playback_.pause(); document_.open(file); source_ = std::make_unique<SourceInfo>(file); sourcePath_ = p;
+        playback_.pause(); document_.open(file, saved); source_ = std::make_unique<SourceInfo>(file); sourcePath_ = p;
         title_ = utf8(p.filename());
         cursor_ = anchor_ = head_ = 0;
+        stretchMode_ = false; stretchBpm_ = stretchBpmInput_ = 120;
+        pitchView_ = false; pitchInput_ = {};
+        pitchNoteSelected_ = pitchNoteDragging_ = -1; pitchDragBase_.reset(); notePositions_.clear();
+        pitchSelection_.clear(); pitchSelectionAnchor_ = {0, -1}; pitchSplitMode_ = pitchMarquee_ = false;
+        pitchVibratoInput_ = 100; pitchVibratoMixed_ = false;
+        pitchVibratoEditing_ = pitchVibratoCancelled_ = false;
+        pitchVibratoBase_.reset(); pitchVibratoSelection_.clear();
+        harmonySelected_ = harmonyLevelVoice_ = -1; harmonyInterval_ = 7; harmonyLevel_ = 35;
+        harmonyLevelEditing_ = harmonyLevelCancelled_ = false; harmonyLevelBase_.reset();
+        stretchDrag_.reset(); stretchAudition_.reset(); stretchDragging_ = -1; rhythmStatus_.clear();
         selecting_ = boundaryDrag_.active = rangeDrag_.active = rulerPanning_ = rulerClickPending_ = false; view_.fit(double(source_->frames));
         playback_.setTimeline(document_.timeline());
         status_ = "Opened " + title_; overviewTimeline_ = waveformTimeline_ = nullptr;
@@ -252,10 +267,53 @@ void Editor::loadSmokeAudio() {
     wheelZooms_ = true;
 }
 void Editor::requestClose() {
+    if (recording_) { error_ = "Stop or cancel recording before closing."; return; }
+    pendingRecord_ = false;
     if (busy_) { error_ = "An operation is running. Cancel it or wait for it to finish before closing."; return; }
     if (document_.dirty()) { pendingClose_ = true; pendingPath_.clear(); confirmDiscard_ = true; }
     else close_ = true;
 }
+void Editor::requestRecording() {
+    if (recording_ || busy_) return;
+    playback_.pause();
+    if (document_.dirty()) {
+        pendingRecord_ = true; pendingClose_ = false; pendingPath_.clear(); confirmDiscard_ = true;
+    } else showRecorder();
+}
+void Editor::showRecorder() {
+    pendingRecord_ = false; recording_ = true; recordingError_.clear(); playback_.pause();
+#ifdef __EMSCRIPTEN__
+    webShowRecorder();
+#else
+    recordPopup_ = true;
+#endif
+}
+void Editor::acceptRecording(std::shared_ptr<AudioFile> audio) {
+    acceptFile(std::move(audio), "Recording.wav", false);
+    status_ = "Recording ready. Export audio to save your take.";
+}
+#ifdef __EMSCRIPTEN__
+bool Editor::beginRecording(unsigned rate, unsigned channels) {
+    if (!recording_ || recordingAudio_) return false;
+    try { recordingAudio_ = std::make_unique<AudioRecording>(rate, channels); return true; }
+    catch (const std::exception& e) { recordingError_ = e.what(); return false; }
+}
+bool Editor::appendRecording(const float* samples, unsigned frames) {
+    if (!recordingAudio_ || frames > 4096) return false;
+    try { recordingAudio_->append(samples, frames); return true; }
+    catch (const std::exception& e) { recordingError_ = e.what(); return false; }
+}
+bool Editor::endRecording(bool keep) {
+    bool ok = true;
+    try {
+        if (keep && !recordingAudio_) throw std::runtime_error("The audio source ended before any audio was recorded.");
+        if (keep) acceptRecording(recordingAudio_->finish());
+    }
+    catch (const std::exception& e) { recordingError_ = e.what(); ok = false; }
+    recordingAudio_.reset(); recording_ = false;
+    return ok;
+}
+#endif
 void Editor::openDialog(bool pasteFromFile) {
     if (busy_ || (pasteFromFile && !document_.timeline())) return;
 #ifdef __EMSCRIPTEN__
@@ -284,11 +342,13 @@ void Editor::exportDialog(bool selectionOnly) {
 void Editor::startJob(const std::string& name, std::function<void(std::stop_token)> task, std::function<void()> done, std::function<void()> retry) {
     if (busy_) return;
     if (job_.joinable()) job_.join();
+    pitchTimeRenderer_.suspend();
     busy_.store(true); jobDone_.store(false); jobProgress_.store(0); jobLabel_ = name; jobError_.clear(); jobSuccess_.clear(); onJobDone_ = std::move(done);
     onJobRetry_ = std::move(retry); jobMemoryNeeded_ = 0;
     const bool sync = syncPlayback_; syncPlayback_ = false;
     job_ = std::jthread([this, task = std::move(task), sync](std::stop_token stop) {
         try {
+            pitchTimeRenderer_.wait(stop);
             if (sync && !playback_.waitForTimeline(stop)) throw std::runtime_error("Processing cancelled.");
             task(stop);
         }
@@ -307,9 +367,8 @@ std::uint64_t Editor::reclaimableAudioBytes() const {
 }
 std::size_t Editor::currentPeakBytes() const {
     const auto t = document_.timeline(); if (!t) return 0;
-    std::unordered_set<const AudioFile*> counted;
     std::size_t bytes = 0;
-    for (const auto& p : t->pieces) if (p.source && counted.insert(p.source.get()).second) bytes += p.source->peakBytes();
+    visitAudioSources(*t, [&](const auto& source) { bytes += source->peakBytes(); });
     return bytes;
 }
 #ifdef __EMSCRIPTEN__
@@ -352,21 +411,296 @@ void Editor::exportTo(const std::filesystem::path& requestedPath, bool selection
     std::filesystem::remove(path); // Only a private temporary export, never a user's disk file.
 #endif
     const bool closeAfter = !selectionOnly && continueAfterExport_ && pendingClose_;
+    const bool recordAfter = !selectionOnly && continueAfterExport_ && pendingRecord_;
     const auto openAfter = !selectionOnly && continueAfterExport_ && !pendingClose_ ? pendingPath_ : std::filesystem::path{};
     continueAfterExport_ = false;
-    startJob(selectionOnly ? "Exporting selection" : isMp3(format) ? "Exporting MP3" : isFlac(format) ? "Exporting FLAC" : "Exporting WAV", [this, t, path, format](std::stop_token stop) { exportAudio(*t, path, format, &jobProgress_, stop); }, [this, path, t, selectionOnly, closeAfter, openAfter] {
+    startJob(selectionOnly ? "Exporting selection" : isMp3(format) ? "Exporting MP3" : isFlac(format) ? "Exporting FLAC" : "Exporting WAV", [this, t, path, format](std::stop_token stop) { exportAudio(*t, path, format, &jobProgress_, stop); }, [this, path, t, selectionOnly, closeAfter, recordAfter, openAfter] {
 #ifdef __EMSCRIPTEN__
         if (!webDownload(path)) { status_ = "Could not prepare the download. Your edits are still here."; return; }
 #endif
         if (!selectionOnly && document_.timeline() == t) document_.markSaved(); status_ = "Exported " + utf8(path.filename());
         if (closeAfter) close_ = true;
+        else if (recordAfter) showRecorder();
         else if (!openAfter.empty()) openNow(openAfter);
     });
 }
 void Editor::afterEdit(const std::string& labelText) {
     auto t = document_.timeline(); if (!t) return;
+    stretchDrag_.reset(); stretchAudition_.reset(); stretchDragging_ = -1;
+    if (t->pitchTime) stretchBpm_ = stretchBpmInput_ = t->pitchTime->time.bpm;
+    const auto nextPitch = t->pitchTime ? t->pitchTime->pitch : PitchSettings{};
+    const bool transposeChanged = nextPitch.semitones != pitchInput_.semitones;
+    pitchInput_ = nextPitch;
+    if (pitchView_ && transposeChanged) fitNotes();
+    pitchNoteDragging_ = -1; pitchDragBase_.reset();
+    pitchMarquee_ = false; syncPitchSelection();
     cursor_ = std::clamp(cursor_, Frame(0), t->frames);
     playback_.setTimeline(t, cursor_); view_.bounds(double(selectionExtent())); status_ = labelText; overviewTimeline_ = waveformTimeline_ = nullptr;
+}
+void Editor::applyPitchTime(PitchTimeState map, const std::string& name, bool renderAudio, bool auditioned, std::function<void()> afterCommit) try {
+    if (busy_) return;
+    map.validate();
+    const auto before = document_.timeline(); if (!before) return;
+    const bool playing = playback_.playing(); cursor_ = playback_.position();
+    const auto commit = [this, before, map, name, renderAudio, auditioned, playing, afterCommit](std::shared_ptr<Timeline> result) {
+        if (document_.timeline() != before) return;
+        result->pitchTime = std::make_shared<PitchTimeState>(map);
+        const bool timingChanged = before->pitchTime ? before->pitchTime->time != map.time : !map.time.identity();
+        if (renderAudio && timingChanged) {
+            const auto remap = [&](Frame frame) {
+                const double sourceFrame = before->pitchTime ? before->pitchTime->time.sourceAt(double(frame)) : double(frame);
+                return Frame(std::llround(map.time.outputAt(sourceFrame)));
+            };
+            anchor_ = remap(anchor_); head_ = remap(head_);
+            if (!auditioned) cursor_ = remap(cursor_);
+        }
+        const double ratio = double(result->frames) / double(before->frames);
+        const double start = view_.start * ratio, span = view_.span * ratio;
+        document_.apply(result, name); afterEdit(name); view_.show(start, span, true);
+        if (pitchView_ && (!before->pitchTime || before->pitchTime->analysis != map.analysis ||
+            before->pitchTime->pitch.semitones != map.pitch.semitones)) fitNotes();
+        if (playing) playback_.play(cursor_, selected() ? first() : 0, selected() ? last() : result->frames, loop_);
+        pitchTimeRenderer_.update(result);
+        if (afterCommit) afterCommit();
+    };
+    // A varispeed placeholder cannot audition independent pitch/formant edits.
+    // Keep the current revision until a cancellable, accurate render succeeds.
+    if (renderAudio && (map.hasPitchChanges() || (before->pitchTime && before->pitchTime->hasPitchChanges()))) {
+        playback_.pause();
+        auto result = std::make_shared<std::shared_ptr<Timeline>>();
+        startJob("Rendering pitch / time", [this, map, result](std::stop_token stop) {
+            *result = renderPitchTime(map, &jobProgress_, stop);
+        }, [commit, result] { commit(std::move(*result)); }, [this, map, name, afterCommit] { applyPitchTime(map, name, true, false, afterCommit); });
+    } else commit(renderAudio ? previewPitchTime(map) : std::make_shared<Timeline>(*before));
+} catch (const std::exception& e) { error_ = e.what(); }
+void Editor::auditionStretch(std::shared_ptr<const Timeline> timeline) {
+    const bool playing = playback_.playing(); const auto position = playback_.position();
+    playback_.setTimeline(timeline, std::min(position, timeline->frames));
+    if (playing) playback_.play(std::min(position, timeline->frames), selected() ? first() : 0, selected() ? last() : timeline->frames, loop_);
+}
+void Editor::addStretchAnchor(double frame) try {
+    const auto t = document_.timeline(); if (!t || busy_) return;
+    auto map = t->pitchTime ? *t->pitchTime : PitchTimeState::identity(t, stretchBpm_);
+    if (map.time.add(frame)) applyPitchTime(std::move(map), "Add stretch anchor", false);
+    else status_ = "Place an anchor on the audio, away from another anchor (maximum 2048).";
+} catch (const std::exception& e) { error_ = e.what(); }
+void Editor::detectRhythm(bool anchors) {
+    const auto t = document_.timeline(); if (!t || t->frames < 2 || busy_) return;
+    auto result = std::make_shared<RhythmAnalysis>();
+    startJob(anchors ? "Finding transient anchors" : "Detecting tempo", [this, t, result](std::stop_token stop) {
+        resolvePitchTime(*t, &jobProgress_, stop);
+        *result = analyzeRhythm(*t, &jobProgress_, stop);
+    }, [this, t, result, anchors] {
+        if (result->bpm > 0) {
+            rhythmStatus_ = "Estimated " + decimal(result->bpm, 1) + " BPM. Check by ear; half/double tempo may fit.";
+            if (!t->pitchTime) stretchBpm_ = stretchBpmInput_ = result->bpm;
+            else if (!anchors) stretchBpmInput_ = result->bpm;
+        } else rhythmStatus_ = "No steady beat found. Set BPM manually.";
+        if (anchors) {
+            auto map = t->pitchTime ? *t->pitchTime : PitchTimeState::identity(t, stretchBpm_);
+            std::size_t added = 0;
+            for (const auto frame : result->transients) {
+                // Keep manually placed anchors and avoid near-duplicate markers.
+                const double beat = double(frame) / map.time.framesPerBeat() + map.time.startBeat();
+                const bool close = std::any_of(map.time.anchors.begin(), map.time.anchors.end(), [&](const auto& a) {
+                    return std::abs(a.beat - beat) * map.time.framesPerBeat() < t->sampleRate * .04;
+                });
+                if (!close && map.time.add(double(frame))) ++added;
+            }
+            if (added) applyPitchTime(std::move(map), "Discover stretch anchors", false);
+            rhythmStatus_ += " Added " + std::to_string(added) + " anchors.";
+            if (result->limited) rhythmStatus_ += " Kept the strongest transients.";
+        }
+        status_ = rhythmStatus_;
+    });
+}
+void Editor::stretchControls() {
+    const auto t = document_.timeline();
+    const auto recordControl = [&](std::size_t index) {
+        const auto a = logical(ImGui::GetItemRectMin()), b = logical(ImGui::GetItemRectMax());
+        stretchControlPositions_[index] = {a.x + 24, (a.y + b.y) * .5f};
+    };
+    ImGui::BeginDisabled(!t || t->frames < 2 || busy_);
+    ImGui::Checkbox("Time-stretch mode", &stretchMode_);
+    ImGui::TextWrapped("Add at least two anchors on the beat ruler, then drag to stretch between them. Audio before the first and after the last keeps its length. Right-click to remove an anchor.");
+    ImGui::SetNextItemWidth(px(150)); ImGui::InputDouble("BPM", &stretchBpmInput_, 1, 10, "%.2f");
+    recordControl(0);
+    const bool valid = std::isfinite(stretchBpmInput_) && stretchBpmInput_ >= 20 && stretchBpmInput_ <= 400;
+    ImGui::BeginDisabled(!valid);
+    if (button(t && t->pitchTime ? "Apply BPM" : "Set BPM", {-1, 32})) {
+        if (t->pitchTime) { auto map = *t->pitchTime; map.time.bpm = stretchBpmInput_; applyPitchTime(std::move(map), "Change tempo"); }
+        else { stretchBpm_ = stretchBpmInput_; status_ = "Beat grid set to " + decimal(stretchBpm_) + " BPM"; }
+    }
+    recordControl(1);
+    ImGui::EndDisabled();
+    if (!valid) ImGui::TextDisabled("Enter 20 to 400 BPM.");
+    if (button("Detect BPM", {-1, 32})) detectRhythm(false);
+    recordControl(2);
+    if (button("Find transient anchors", {-1, 32})) detectRhythm(true);
+    recordControl(3);
+    ImGui::Checkbox("Snap drags to 1/4 beat", &stretchSnap_);
+    ImGui::TextWrapped(t && t->pitchTime && t->pitchTime->hasPitchChanges()
+        ? "Hold Alt for free timing. With pitch or formant changes, dragging previews the waveform; audio renders on release."
+        : "Hold Alt for free timing. A fast resampled preview plays immediately; pitch-preserving audio finishes in the background. Exports always use the finished audio.");
+    if (t && t->pitchTime) {
+        ImGui::Text("%zu anchors / %.2f BPM", t->pitchTime->time.anchors.size(), t->pitchTime->time.bpm);
+        ImGui::TextWrapped("BPM changes keep anchors on their beats and change the speed of the whole file.");
+        ImGui::TextWrapped("Other audio edits bake pitch and timing and clear their controls; undo restores them.");
+        if (button("Reset stretch", {-1, 32})) {
+            auto reset = *t->pitchTime; reset.time.bpm = reset.time.sourceBpm;
+            reset.time.anchors.clear();
+            applyPitchTime(std::move(reset), "Reset stretch");
+        }
+        recordControl(4);
+    } else ImGui::TextWrapped("Set the source BPM first, then add anchors. Until then, BPM only changes the grid.");
+    if (!rhythmStatus_.empty()) ImGui::TextWrapped("%s", rhythmStatus_.c_str());
+    if (!pitchTimeRenderer_.error().empty()) {
+        ImGui::TextWrapped("Resampled preview active: %s", pitchTimeRenderer_.error().c_str());
+        if (button("Retry pitch-preserving render", {-1, 32})) pitchTimeRenderer_.retry();
+    }
+    ImGui::EndDisabled();
+}
+void Editor::openPitch() {
+    const auto t = document_.timeline();
+    if (busy_ || recording_ || !t || t->frames < 2) return;
+    pitchInput_ = t->pitchTime ? t->pitchTime->pitch : PitchSettings{};
+    pitchPopup_ = true;
+}
+void Editor::pitchControls() {
+    const auto t = document_.timeline();
+    const auto recordControl = [&](std::size_t index) {
+        const auto a = logical(ImGui::GetItemRectMin()), b = logical(ImGui::GetItemRectMax());
+        pitchControlPositions_[index] = {a.x + 24, (a.y + b.y) * .5f};
+    };
+    ImGui::TextWrapped("Transpose the whole file without changing its duration. Pitch and timing stay independently editable.");
+    ImGui::BeginDisabled(busy_ || !t || t->frames < 2);
+    ImGui::TextUnformatted("Transpose (semitones)");
+    ImGui::SetNextItemWidth(-1); ImGui::InputDouble("##transpose", &pitchInput_.semitones, 1, 12, "%.2f");
+    recordControl(0);
+    ImGui::TextWrapped("-24 to +24. A value of 0.01 is one cent.");
+    ImGui::Checkbox("Preserve formants", &pitchInput_.preserveFormants);
+    recordControl(1);
+    ImGui::TextWrapped("Keep the voice or instrument's tonal character when transposing.");
+    ImGui::TextUnformatted("Formant shift (semitones)");
+    ImGui::SetNextItemWidth(-1); ImGui::InputDouble("##formant-shift", &pitchInput_.formantSemitones, 1, 12, "%.2f");
+    recordControl(2);
+    ImGui::TextWrapped("-12 to +12. Changes tonal character without changing the notes.");
+    ImGui::TextUnformatted("Voice / instrument pitch (Hz)");
+    ImGui::SetNextItemWidth(-1); ImGui::InputDouble("##formant-base", &pitchInput_.formantBaseHz, 10, 100, "%.1f");
+    recordControl(3);
+    ImGui::TextWrapped("0 estimates automatically. A rough pitch, such as 200 Hz for a voice, can help formant processing.");
+    std::string invalid;
+    try { pitchInput_.validate(t ? t->sampleRate : 48000); }
+    catch (const std::exception& e) { invalid = e.what(); }
+    const auto current = t && t->pitchTime ? t->pitchTime->pitch : PitchSettings{};
+    ImGui::BeginDisabled(!invalid.empty() || pitchInput_ == current);
+    if (button("Apply pitch / formants", {-1, 34}, true)) {
+        auto state = t->pitchTime ? *t->pitchTime : PitchTimeState::identity(t, stretchBpm_);
+        state.pitch = pitchInput_; applyPitchTime(std::move(state), "Pitch / formants");
+    }
+    recordControl(4);
+    ImGui::EndDisabled();
+    if (!invalid.empty()) ImGui::TextWrapped("%s", invalid.c_str());
+    ImGui::BeginDisabled(current == PitchSettings{});
+    if (button("Reset pitch / formants", {-1, 32})) {
+        auto state = *t->pitchTime; state.pitch = {};
+        applyPitchTime(std::move(state), "Reset pitch / formants");
+    }
+    recordControl(5);
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+    ImGui::TextWrapped("Apply finishes rendering before changing the audio and adds one undo step. Reset keeps your time-stretch settings.");
+}
+void Editor::beatRuler(ImVec2 p, float width) {
+    const auto t = document_.timeline(); if (!t) return;
+    auto d = drawList(); const auto& io = ImGui::GetIO(); const auto mouse = logical(io.MousePos);
+    const float left = p.x + 46, right = p.x + width, plotWidth = std::max(1.f, width - 46);
+    const double fpb = 60. * t->sampleRate / stretchBpm_;
+    const double origin = t->pitchTime ? t->pitchTime->time.startBeat() : 0;
+    const auto xAt = [&](double beat) { return left + float(((beat - origin) * fpb - view_.start) / view_.span) * plotWidth; };
+    d.AddRectFilled(p, {right, p.y + 40}, IM_COL32(26, 42, 47, 255));
+    d.AddLine(p, {right, p.y}, line); d.AddLine({p.x, p.y + 40}, {right, p.y + 40}, line);
+    label({p.x + 6, p.y + 11}, "BPM", teal);
+    ImGui::SetCursorScreenPos(px(p));
+    if (ImGui::InvisibleButton("Stretch settings", px({46, 40}))) stretchPopup_ = true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%.2f BPM - click for tempo and automatic detection", stretchBpm_);
+    d.PushClipRect({left, p.y}, {right, p.y + 40}, true);
+    // Keep the alternating bands attached to musical positions while panning.
+    // Zooming reveals quarter beats or groups beats, without narrow striping.
+    const double pixelsPerBeat = fpb / view_.span * plotWidth;
+    double band = 1;
+    while (band * pixelsPerBeat < 28) band *= 2;
+    while (band > .25 && band * pixelsPerBeat > 112) band *= .5;
+    const double firstBand = std::floor((view_.start / fpb + origin) / band);
+    for (double i = firstBand; (i * band - origin) * fpb < view_.start + view_.span; ++i) {
+        const auto color = std::fmod(std::abs(i), 2.) < 1 ? IM_COL32(26, 42, 47, 255) : IM_COL32(32, 48, 53, 255);
+        d.AddRectFilled({xAt(i * band), p.y + 1}, {xAt((i + 1) * band), p.y + 39}, color);
+    }
+    double tick = 1;
+    while (tick * fpb / view_.span * plotWidth < 56) tick *= 2;
+    for (double beat = std::ceil((view_.start / fpb + origin) / tick) * tick; (beat - origin) * fpb <= view_.start + view_.span; beat += tick) {
+        const float x = xAt(beat); d.AddLine({x, p.y + 21}, {x, p.y + 40}, line);
+        label({x + 4, p.y + 3}, decimal(beat + 1, 0), muted);
+    }
+    const auto* map = stretchDrag_ ? stretchDrag_.get() : t->pitchTime.get();
+    int hot = -1; float nearest = 9;
+    if (map) for (std::size_t i = 0; i < map->time.anchors.size(); ++i) {
+        const float x = xAt(map->time.anchors[i].beat), distance = std::abs(mouse.x - x);
+        if (distance < nearest) { hot = int(i); nearest = distance; }
+        const auto color = int(i) == stretchDragging_ ? amber : teal;
+        d.AddLine({x, p.y + 18}, {x, p.y + 39}, color, 1.5f);
+        d.AddTriangleFilled({x - 6, p.y + 30}, {x + 6, p.y + 30}, {x, p.y + 23}, color);
+    }
+    d.PopClipRect();
+    ImGui::SetCursorScreenPos(px({left, p.y}));
+    ImGui::InvisibleButton("Beat ruler", px({plotWidth, 40}), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    const bool hovered = ImGui::IsItemHovered();
+    const double frame = view_.start + (mouse.x - left) / plotWidth * view_.span;
+    if (hovered && !busy_) {
+        if (hot >= 0 && map && map->time.anchors.size() >= 2) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            ImGui::SetTooltip("Beat %.3f - drag to stretch neighbours. Alt: free timing.\nRight-click to remove this anchor.", map->time.anchors[hot].beat + 1);
+        } else ImGui::SetTooltip("Click to add an anchor at the audio under the pointer.\nAt least two anchors are needed to stretch. BPM opens settings.");
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            if (hot >= 0 && map && map->time.anchors.size() >= 2) {
+                stretchDrag_ = std::make_unique<PitchTimeState>(*map); stretchDragging_ = hot;
+                stretchDragOffset_ = frame / fpb + origin - stretchDrag_->time.anchors[hot].beat;
+                pitchTimeRenderer_.suspend();
+            } else if (hot < 0) addStretchAnchor(frame);
+        }
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+            stretchContextAnchor_ = hot; stretchContextFrame_ = frame; ImGui::OpenPopup("Beat actions");
+        }
+        if (io.MouseWheel != 0) view_.zoom(std::exp(-io.MouseWheel * .22), (mouse.x - left) / plotWidth);
+    }
+    if (stretchDrag_) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) { stretchDrag_.reset(); stretchAudition_.reset(); stretchDragging_ = -1; waveformTimeline_ = nullptr; auditionStretch(t); }
+        else if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            if (mouse.x < left || mouse.x > right) view_.pan((mouse.x < left ? mouse.x - left : mouse.x - right) / plotWidth * view_.span * io.DeltaTime * 8, true);
+            double beat = frame / fpb + origin - stretchDragOffset_;
+            if (stretchSnap_ && !io.KeyAlt) beat = std::round(beat * 4) / 4;
+            if (ImGui::IsMouseDragging(ImGuiMouseButton_Left) && stretchDrag_->time.move(std::size_t(stretchDragging_), beat)) {
+                waveformTimeline_ = nullptr; stretchAudition_ = previewPitchTime(*stretchDrag_);
+                if (!stretchDrag_->hasPitchChanges()) auditionStretch(stretchAudition_);
+            }
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        } else {
+            auto next = std::move(*stretchDrag_); const int index = stretchDragging_;
+            const bool auditioned = bool(stretchAudition_) && !next.hasPitchChanges();
+            stretchDrag_.reset(); stretchAudition_.reset(); stretchDragging_ = -1; waveformTimeline_ = nullptr;
+            if (t->pitchTime && next.time.anchors[index].beat != t->pitchTime->time.anchors[index].beat) applyPitchTime(std::move(next), "Move stretch anchor", true, auditioned);
+            else auditionStretch(t);
+        }
+    }
+    if (ImGui::BeginPopup("Beat actions")) {
+        if (ImGui::MenuItem("Add anchor here", nullptr, false, !busy_)) addStretchAnchor(stretchContextFrame_);
+        if (ImGui::MenuItem("Remove anchor", nullptr, false, !busy_ && t->pitchTime && stretchContextAnchor_ >= 0 && stretchContextAnchor_ < int(t->pitchTime->time.anchors.size()))) {
+            auto next = *t->pitchTime; next.time.anchors.erase(next.time.anchors.begin() + stretchContextAnchor_);
+            applyPitchTime(std::move(next), "Remove stretch anchor");
+        }
+        if (ImGui::MenuItem("Tempo / auto detection...")) stretchPopup_ = true;
+        ImGui::EndPopup();
+    }
 }
 void Editor::normalize() {
     openCleanup(Cleanup::Normalize);
@@ -490,6 +824,7 @@ void Editor::action(const std::string& name) try {
     error_ = e.what();
 }
 void Editor::togglePlay() {
+    if (recording_) return;
     auto t = document_.timeline(); if (!t || !t->frames) return;
     if (playback_.playing()) { playback_.pause(); cursor_ = playback_.position(); }
     else {
@@ -499,16 +834,35 @@ void Editor::togglePlay() {
     }
 }
 void Editor::shortcuts() {
+    if (recording_) return;
     auto& io = ImGui::GetIO(); if (io.WantTextInput || ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) return;
     const bool ctrl = io.KeyCtrl || io.KeySuper;
     auto pressed = [](ImGuiKey k) { return ImGui::IsKeyPressed(k, false); };
+    if (stretchDrag_ || pitchNoteDragging_ >= 0 || pitchMarquee_ || pitchVibratoEditing_ || harmonyLevelEditing_) return; // The active drag handles Escape.
+    if (!busy_ && !ctrl && pressed(ImGuiKey_T) && document_.timeline()) stretchMode_ = !stretchMode_;
+    if (!ctrl && pressed(ImGuiKey_N)) togglePitchView();
+    if (!ctrl && pressed(ImGuiKey_P)) openPitch();
     if (ctrl && pressed(ImGuiKey_O)) openDialog();
+    if (!ctrl && ImGui::GetIO().KeyShift && pressed(ImGuiKey_R)) { requestRecording(); return; }
     if (ctrl && pressed(ImGuiKey_S)) exportDialog();
     if (ctrl && pressed(ImGuiKey_E)) exportDialog(io.KeyShift);
     if (pressed(ImGuiKey_F1)) help_ = true;
     if (pressed(ImGuiKey_Space)) togglePlay();
     if (ctrl && pressed(ImGuiKey_Z)) action(io.KeyShift ? "redo" : "undo");
     if (ctrl && pressed(ImGuiKey_Y)) action("redo");
+    if (pitchView_) {
+        if (!busy_ && pressed(ImGuiKey_Escape)) { pitchSelection_.clear(); pitchSelectionAnchor_ = {0, -1}; pitchSplitMode_ = false; syncPitchSelection(); }
+        if (!busy_ && ctrl && pressed(ImGuiKey_A)) selectAllNotes();
+        if (!busy_ && !ctrl && pressed(ImGuiKey_S)) pitchSplitMode_ = !pitchSplitMode_;
+        if (!busy_ && (pressed(ImGuiKey_Delete) || pressed(ImGuiKey_Backspace))) removeHarmonyNotes();
+        if (!ctrl && pressed(ImGuiKey_F)) { action("fit"); fitNotes(); }
+        if (!ctrl && pressed(ImGuiKey_L)) { loop_ = !loop_; if (playback_.playing()) { playback_.pause(); togglePlay(); } }
+        if (pressed(ImGuiKey_Equal) || pressed(ImGuiKey_KeypadAdd)) view_.zoom(.65, .5);
+        if (pressed(ImGuiKey_Minus) || pressed(ImGuiKey_KeypadSubtract)) view_.zoom(1.5, .5);
+        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) view_.pan(-view_.targetSpan * .08);
+        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) view_.pan(view_.targetSpan * .08);
+        return; // Audio cut/delete shortcuts belong to the waveform view.
+    }
     if (ctrl && pressed(ImGuiKey_A)) action("select");
     if (ctrl && pressed(ImGuiKey_C)) action("copy");
     if (ctrl && pressed(ImGuiKey_X)) action("cut");
@@ -663,7 +1017,12 @@ void Editor::mainMenu() {
                 item("Invert left polarity", nullptr, "invert-left", hasAudio && t->channels == 2);
                 item("Invert right polarity", nullptr, "invert-right", hasAudio && t->channels == 2); ImGui::EndMenu();
             }
-            item("Reverse", "R", "reverse", hasAudio); item("Silence", nullptr, "silence", hasAudio); ImGui::EndMenu();
+            item("Reverse", "R", "reverse", hasAudio); item("Silence", nullptr, "silence", hasAudio);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Time stretch / tempo...", "T", false, hasAudio)) run = [this] { stretchMode_ = stretchPopup_ = true; };
+            if (ImGui::MenuItem("Pitch / formants...", "P", false, hasAudio)) run = [this] { openPitch(); };
+            if (ImGui::MenuItem("Pitch editor", "N", pitchView_, hasAudio)) run = [this] { togglePitchView(); };
+            ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Playback")) {
             if (ImGui::MenuItem(playback_.playing() ? "Pause" : "Play", "Space", false, hasAudio)) run = [this] { togglePlay(); };
@@ -704,6 +1063,7 @@ void Editor::mainMenu() {
             ImGui::EndMenu();
         }
 #endif
+        if (ImGui::MenuItem("Record audio...", "Shift+R", false, !busy_)) run = [this] { requestRecording(); };
         if (ImGui::MenuItem("Keyboard shortcuts", "F1")) run = [this] { help_ = true; };
 #ifndef __EMSCRIPTEN__
         if (ImGui::MenuItem("Quit", nullptr, false, !busy_)) run = [this] { requestClose(); };
@@ -716,7 +1076,9 @@ void Editor::mainMenu() {
 }
 void Editor::transport() {
     ImGui::SetCursorPos(px({192, 12}));
-    if (iconButton("start", 3, false, "Return to start  /  Home")) { cursor_ = 0; playback_.seek(0); }
+    ImGui::BeginDisabled(busy_);
+    if (iconButton("record", 5, false, "Record a new file  /  Shift+R")) requestRecording();
+    ImGui::EndDisabled();
     ImGui::SameLine(0, px(8)); if (iconButton("play", playback_.playing() ? 1 : 0, true, "Play / pause  /  Space")) togglePlay();
     ImGui::SameLine(0, px(8)); if (iconButton("stop", 2, false, "Stop and return to selection start")) { playback_.pause(); cursor_ = selected() ? first() : 0; playback_.seek(cursor_); }
     ImGui::SameLine(0, px(8)); if (iconButton("loop", 4, loop_, "Loop selection or whole file  /  L")) { loop_ = !loop_; if (playback_.playing()) { playback_.pause(); togglePlay(); } }
@@ -750,7 +1112,8 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
     auto t = document_.timeline(); if (!t || (opening_ && busy_)) { emptyState(p, size); return; }
     auto d = drawList(); auto& io = ImGui::GetIO();
     const auto mouse = logical(io.MousePos);
-    constexpr float ruler = 34, gutter = 46;
+    constexpr float timeRuler = 34, gutter = 46;
+    const float ruler = timeRuler + (stretchMode_ ? 40.f : 0.f);
     const float left = p.x + gutter, right = p.x + size.x, top = p.y + ruler, bottom = p.y + size.y;
     const float width = std::max(1.f, right - left), laneH = (size.y - ruler) / t->channels;
     d.AddRectFilled(p, {right, bottom}, panel, 8);
@@ -767,7 +1130,7 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
     if (selected()) {
         const float a = xAt(double(first())), b = xAt(double(last()));
         d.AddRectFilled({a, top}, {b, bottom}, IM_COL32(71, 177, 153, 28));
-        d.AddRectFilled({a, p.y}, {b, top}, IM_COL32(80, 190, 162, 40));
+        d.AddRectFilled({a, p.y}, {b, p.y + timeRuler}, IM_COL32(80, 190, 162, 40));
     }
     if (last() > t->frames) {
         const float end = xAt(double(t->frames));
@@ -781,16 +1144,18 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
     const int firstPixel = int(std::floor(rasterLeft));
     const int columns = std::max(1, int(std::ceil(rasterRight)) - firstPixel);
     const double samplesPerPixel = view_.span / columns;
-    const auto build = waveformBuild(t.get());
+    const auto& visible = stretchAudition_ ? *stretchAudition_ : *t;
+    const auto build = waveformBuild(&visible);
     const bool peaksReady = build.ready;
     if (waveformTimeline_ != t.get() || waveformStart_ != view_.start || waveformSpan_ != view_.span || waveformColumns_ != columns ||
         waveformRasterLeft_ != rasterLeft || waveformRasterRight_ != rasterRight || waveformReady_ != peaksReady) {
         waveformCache_.resize(std::size_t(columns) * t->channels);
         const auto frameAtEdge = [&](int x) {
-            return view_.start + std::clamp((firstPixel + x - rasterLeft) / (rasterRight - rasterLeft), 0., 1.) * view_.span;
+            const double frame = view_.start + std::clamp((firstPixel + x - rasterLeft) / (rasterRight - rasterLeft), 0., 1.) * view_.span;
+            return stretchDrag_ && t->pitchTime ? frame - (stretchDrag_->time.startBeat() - t->pitchTime->time.startBeat()) * stretchDrag_->time.framesPerBeat() : frame;
         };
         for (unsigned c = 0; c < t->channels; ++c) for (int x = 0; x < columns; ++x) {
-            waveformCache_[std::size_t(c) * columns + x] = waveformPeak(*t, frameAtEdge(x), frameAtEdge(x + 1), c, peaksReady);
+            waveformCache_[std::size_t(c) * columns + x] = waveformPeak(visible, frameAtEdge(x), frameAtEdge(x + 1), c, peaksReady);
         }
         waveformTimeline_ = t.get(); waveformStart_ = view_.start; waveformSpan_ = view_.span;
         waveformColumns_ = columns; waveformReady_ = peaksReady;
@@ -812,7 +1177,7 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
             const float coverage = float(std::min(double(pixel + 1), rasterRight) - std::max(double(pixel), rasterLeft));
             d.AddWaveformColumn(pixel, lo, hi, color, dpi_.raster, coverage);
         }
-        if (samplesPerPixel < .16) {
+        if (samplesPerPixel < .16 && !stretchDrag_) {
             const Frame firstFrame = std::max<Frame>(0, Frame(std::floor(view_.start)) - 1);
             const Frame endFrame = std::min(t->frames, Frame(std::ceil(view_.start + view_.span)) + 1);
             for (Frame f = firstFrame; f < endFrame; ++f) {
@@ -823,14 +1188,32 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
         d.PopClipRect();
         if (c) d.AddLine({left, top + laneH * c}, {right, top + laneH * c}, line);
     }
-    const bool inside = mouse.x >= left && mouse.x <= right && mouse.y >= p.y && mouse.y <= bottom;
+    const bool inBeatRuler = stretchMode_ && mouse.y >= p.y + timeRuler && mouse.y < top;
+    if (stretchMode_) if (const auto* map = stretchDrag_ ? stretchDrag_.get() : t->pitchTime.get()) {
+        const double origin = t->pitchTime ? t->pitchTime->time.startBeat() : 0;
+        const double fpb = map->time.framesPerBeat();
+        for (std::size_t i = 0; i < map->time.anchors.size(); ++i) {
+            const float x = xAt((map->time.anchors[i].beat - origin) * fpb);
+            if (x < left || x > right) continue;
+            const bool active = int(i) == stretchDragging_;
+            const bool hot = inBeatRuler && std::abs(mouse.x - x) < 9;
+            // Dense discovered anchors recede at wide zoom; the active guide
+            // remains easy to follow through both waveform lanes.
+            double gap = view_.span;
+            if (i) gap = std::min(gap, (map->time.anchors[i].beat - map->time.anchors[i - 1].beat) * fpb);
+            if (i + 1 < map->time.anchors.size()) gap = std::min(gap, (map->time.anchors[i + 1].beat - map->time.anchors[i].beat) * fpb);
+            const int opacity = int(64 * std::clamp(gap / view_.span * width / 12., .25, 1.));
+            d.AddLine({x, top}, {x, bottom}, active ? IM_COL32(244, 190, 111, 155) : IM_COL32(116, 190, 174, hot ? 110 : opacity));
+        }
+    }
+    const bool inside = !inBeatRuler && mouse.x >= left && mouse.x <= right && mouse.y >= p.y && mouse.y <= bottom;
     const SelectionEdge edge = selected() && inside ? hitSelectionEdge(mouse.x, xAt(double(first())), xAt(double(last()))) : SelectionEdge::None;
     if (selected()) for (Frame f : {first(), last()}) {
         const float x = xAt(double(f)); d.AddLine({x, p.y}, {x, bottom}, IM_COL32(98, 222, 193, 170));
         const bool active = boundaryDrag_.active && f == head_;
         const bool hot = edge == (f == first() ? SelectionEdge::Start : SelectionEdge::End);
         const float grip = hot || active ? 5.f : 3.f;
-        d.AddRectFilled({x - grip, top - 8}, {x + grip, top + 8}, hot || active ? text : teal, 2);
+        d.AddRectFilled({x - grip, p.y + timeRuler - 8}, {x + grip, p.y + timeRuler + 8}, hot || active ? text : teal, 2);
     }
     const float playX = xAt(double(cursor_));
     d.AddLine({playX, p.y + 25}, {playX, bottom}, amber, 1.5f);
@@ -858,9 +1241,12 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
         d.PopClipRect();
     }
     ImGui::SetCursorScreenPos(px({left, p.y}));
-    ImGui::InvisibleButton("waveform", px({width, size.y}), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle | ImGuiButtonFlags_MouseButtonRight);
-    const bool hovered = ImGui::IsItemHovered();
-    const bool onRuler = mouse.y < top;
+    ImGui::InvisibleButton("Time ruler", px({width, timeRuler}), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
+    const bool rulerHovered = ImGui::IsItemHovered(), rulerActive = ImGui::IsItemActive();
+    ImGui::SetCursorScreenPos(px({left, top}));
+    ImGui::InvisibleButton("waveform", px({width, std::max(1.f, bottom - top)}), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle | ImGuiButtonFlags_MouseButtonRight);
+    const bool hovered = !busy_ && !stretchDrag_ && (rulerHovered || ImGui::IsItemHovered());
+    const bool onRuler = mouse.y < p.y + timeRuler;
     const auto frameAtMouse = [&] { return Frame(std::llround(view_.start + (mouse.x - left) / width * view_.span)); };
     if (hovered && (io.MouseWheel != 0 || io.MouseWheelH != 0)) {
         if (io.KeyAlt) verticalZoom_ = std::clamp(verticalZoom_ * std::exp(io.MouseWheel * .12f), .25f, 8.f);
@@ -947,7 +1333,7 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
         cursor_ = rulerClickFrame_; playback_.seek(cursor_);
         rulerClickPending_ = false;
     }
-    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0)) { view_.pan(-io.MouseDelta.x / dpi_.layout / width * view_.span, true); ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); }
+    if ((rulerActive || ImGui::IsItemActive()) && ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0)) { view_.pan(-io.MouseDelta.x / dpi_.layout / width * view_.span, true); ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); }
     if (ImGui::BeginPopupContextItem("Wave actions")) {
         if (ImGui::MenuItem("Copy", "Ctrl+C", false, selected())) action("copy");
         if (ImGui::MenuItem("Cut", "Ctrl+X", false, selected())) action("cut");
@@ -962,6 +1348,7 @@ void Editor::waveform(ImVec2 p, ImVec2 size) {
         ImGui::EndPopup();
         if (pasteFile) openDialog(true);
     }
+    if (stretchMode_) beatRuler({p.x, p.y + timeRuler}, size.x);
 }
 void Editor::overview(ImVec2 p, ImVec2 size) {
     auto t = document_.timeline();
@@ -1097,6 +1484,12 @@ void Editor::inspector(ImVec2 p, ImVec2 size) {
     ImGui::Checkbox("Follow playback", &follow_);
     ImGui::TextDisabled("Vertical zoom"); ImGui::SameLine(); ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("##vertical", &verticalZoom_, .25f, 8, "%.1fx", ImGuiSliderFlags_Logarithmic);
     if (button("Reset view", {-1, 30})) { action("fit"); verticalZoom_ = 1; }
+    ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+    ImGui::BeginDisabled(!t || busy_);
+    if (button("Time stretch / tempo...", {-1, 32})) stretchMode_ = stretchPopup_ = true;
+    if (button("Pitch / formants...", {-1, 32})) openPitch();
+    if (button(pitchView_ ? "Waveform editor" : "Pitch editor", {-1, 32})) togglePitchView();
+    ImGui::EndDisabled();
     ImGui::EndChild(); ImGui::PopStyleVar();
 }
 void Editor::emptyState(ImVec2 p, ImVec2 size) {
@@ -1137,7 +1530,8 @@ void Editor::emptyState(ImVec2 p, ImVec2 size) {
     };
     centeredLabel(cy + 33, compact_ ? "Open a WAV, FLAC or MP3 file." : "Drop a WAV, FLAC or MP3 file here to get started.", muted, bodyFont_);
     ImGui::SetCursorScreenPos(px({cx - 72.5f, cy + 78})); if (button("Open audio", {145, 40}, true)) openDialog();
-    if (!compact_ || size.y > 330) centeredLabel(cy + 145, compact_ ? "Audio stays on your device." : "WAV / FLAC / MP3    /    MONO & STEREO", muted, bodyFont_);
+    ImGui::SetCursorScreenPos(px({cx - 72.5f, cy + 126}));
+    if (button("Record audio", {145, 40})) requestRecording();
 }
 void Editor::modals() {
     std::function<void()> retryAfterPopup;
@@ -1155,6 +1549,68 @@ void Editor::modals() {
         ImGui::SetNextWindowSize({px(modalWidth), 0}, ImGuiCond_Always);
         ImGui::SetNextWindowSizeConstraints({px(modalWidth), 0}, {px(modalWidth), display.y - px(24)});
     };
+#ifndef __EMSCRIPTEN__
+    if (recordPopup_) { ImGui::OpenPopup("Record audio"); recordPopup_ = false; }
+    fitModal();
+    if (ImGui::BeginPopupModal("Record audio", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        modalText("Record a new file from the default microphone.");
+        modalText("Stop opens the take in the editor. Export audio to save it.");
+        if (!recordingError_.empty()) ImGui::TextWrapped("%s", recordingError_.c_str());
+        if (recordingAudio_) {
+            ImGui::Text("Recording  %s", timecode(double(recordingAudio_->frames()), 48000, true).c_str());
+            ImGui::ProgressBar(std::clamp(recordingAudio_->level(), 0.f, 1.f), px({240, 12}), "Input");
+            if (button("Stop and keep", {150, 36}, true) || recordingAudio_->failed()) {
+                try {
+                    auto audio = recordingAudio_->finish();
+                    const auto message = recordingAudio_->error();
+                    acceptRecording(std::move(audio));
+                    if (!message.empty()) error_ = message;
+                    recordingAudio_.reset(); recording_ = false; ImGui::CloseCurrentPopup();
+                } catch (const std::exception& e) { recordingError_ = e.what(); recordingAudio_.reset(); }
+            }
+        } else if (button("Start microphone", {180, 36}, true)) {
+            try { recordingError_.clear(); recordingAudio_ = std::make_unique<MicrophoneRecording>(); }
+            catch (const std::exception& e) { recordingError_ = e.what(); }
+        }
+        if (recording_) {
+            ImGui::SameLine();
+            if (button(recordingAudio_ ? "Discard take" : "Cancel", {130, 36}) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+                recordingAudio_.reset(); recording_ = false; ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndPopup();
+    }
+#endif
+    if (stretchPopup_) { ImGui::OpenPopup("Time stretch"); stretchPopup_ = false; }
+    ImGui::SetNextWindowPos({ImGui::GetIO().DisplaySize.x * .5f, ImGui::GetIO().DisplaySize.y * .5f}, ImGuiCond_Always, {.5f, .5f});
+    ImGui::SetNextWindowSize({px(modalWidth), 0}, ImGuiCond_Always);
+    fitModal();
+    if (ImGui::BeginPopupModal("Time stretch", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        stretchControls();
+        if (busy_) {
+            ImGui::ProgressBar(jobProgress_.load(), {-1, 0});
+            if (button("Cancel processing", {-1, 32})) job_.request_stop();
+        }
+        ImGui::BeginDisabled(busy_);
+        if (button("Done", {-1, 34}, true) || (!busy_ && ImGui::IsKeyPressed(ImGuiKey_Escape, false))) ImGui::CloseCurrentPopup();
+        ImGui::EndDisabled(); ImGui::EndPopup();
+    }
+    if (pitchPopup_) { ImGui::OpenPopup("Pitch / formants"); pitchPopup_ = false; }
+    ImGui::SetNextWindowPos({ImGui::GetIO().DisplaySize.x * .5f, ImGui::GetIO().DisplaySize.y * .5f}, ImGuiCond_Always, {.5f, .5f});
+    ImGui::SetNextWindowSize({px(modalWidth), 0}, ImGuiCond_Always);
+    fitModal();
+    if (ImGui::BeginPopupModal("Pitch / formants", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        pitchControls();
+        if (busy_) {
+            ImGui::ProgressBar(jobProgress_.load(), {-1, 0});
+            if (button("Cancel processing", {-1, 32})) job_.request_stop();
+            const auto a = logical(ImGui::GetItemRectMin()), b = logical(ImGui::GetItemRectMax());
+            pitchControlPositions_[6] = {a.x + 24, (a.y + b.y) * .5f};
+        }
+        ImGui::BeginDisabled(busy_);
+        if (button("Done", {-1, 34}) || (!busy_ && ImGui::IsKeyPressed(ImGuiKey_Escape, false))) ImGui::CloseCurrentPopup();
+        ImGui::EndDisabled(); ImGui::EndPopup();
+    }
     if (cleanupPopup_) { ImGui::OpenPopup("Audio cleanup"); cleanupPopup_ = false; }
     ImGui::SetNextWindowPos({ImGui::GetIO().DisplaySize.x * .5f, ImGui::GetIO().DisplaySize.y * .5f}, ImGuiCond_Always, {.5f, .5f});
     ImGui::SetNextWindowSize({px(520), 0}, ImGuiCond_Always);
@@ -1235,11 +1691,12 @@ void Editor::modals() {
     fitModal();
     if (ImGui::BeginPopupModal("Keep your changes?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         modalText("This document has edits that have not been exported.");
-        modalText("Export audio to keep your edits before opening another file or closing.");
+        modalText("Export audio to keep your edits before opening a file, recording or closing.");
         ImGui::Spacing();
         if (button("Export audio...", {150, 36}, true)) { continueAfterExport_ = true; ImGui::CloseCurrentPopup(); exportDialog(); }
-        if (!compact_) ImGui::SameLine(); if (button("Discard edits", {130, 36})) { ImGui::CloseCurrentPopup(); if (pendingClose_) close_ = true; else openNow(pendingPath_); }
-        if (!compact_) ImGui::SameLine(); if (button("Cancel", {90, 36})) {
+        if (!compact_) ImGui::SameLine(); if (button("Discard edits", {130, 36})) { ImGui::CloseCurrentPopup(); if (pendingClose_) close_ = true; else if (pendingRecord_) showRecorder(); else openNow(pendingPath_); }
+        if (!compact_) ImGui::SameLine(); if (button("Cancel", {90, 36}) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            pendingRecord_ = false;
             ImGui::CloseCurrentPopup();
 #ifdef __EMSCRIPTEN__
             webClearImport();
@@ -1297,7 +1754,12 @@ void Editor::modals() {
     if (ImGui::BeginPopupModal("Find your way around", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextUnformatted("TIMELINE"); ImGui::Spacing();
         ImGui::TextWrapped("Click the top ruler to place the play cursor without changing the selection. Drag inside the selection to move it; drag elsewhere on the ruler to pan.");
-        const char* rows[][2] = {{wheelZooms_ ? "Wheel" : "Ctrl + wheel", "Zoom around the pointer"}, {wheelZooms_ ? "Ctrl + wheel" : "Wheel", "Scroll through audio"}, {"Horizontal wheel", "Scroll through audio"}, {"Navigator wheel", "Zoom around the current view"}, {"Middle-button drag", "Pan directly"}, {"Alt + wheel", "Adjust vertical scale"}, {"Drag / Shift-click", "Select / extend range"}, {"Drag inside / Alt-drag", "Move range / draw new range"}, {"Double-click", "Select all / clear full selection"}, {"Space / L", "Play-pause / toggle loop"}, {"F / Z", "Fit file / zoom to selection"}, {"Ctrl + X / C / V", "Cut / copy / paste (mix into selection)"}, {"Ctrl + Shift + V", "Replace selection with clipboard"}, {"Ctrl + T / Delete", "Trim / delete selection"}, {"Ctrl + Z / Ctrl + Shift + Z", "Undo / redo"}, {"R / Home / End", "Reverse / jump to start / end"}, {"Ctrl + O / Ctrl + E", "Open audio / export audio"}, {"I / O", "Fade in / fade out selection"}, {"Insert", "Insert silence at cursor"}, {"J", "Snap selection to zero crossings"}, {"Ctrl + Shift + E", "Save selected audio (WAV/FLAC/MP3)"}};
+        ImGui::TextWrapped("T toggles time-stretch mode. Click its beat ruler to add anchors, drag to stretch, right-click to remove. Click BPM for tempo and transient detection.");
+        ImGui::TextWrapped("P opens pitch and formant controls for the whole file. Apply adds one undo step; pitch and timing render together from the retained source.");
+        ImGui::TextWrapped("N toggles the monophonic pitch editor. Detect notes, then drag vertically; Alt allows fine tuning. Correct snaps selected/all note centres to semitones. Escape clears the note selection or cancels a drag.");
+        ImGui::TextWrapped("In the pitch editor: Ctrl-click toggles notes, Shift-click selects a range, dragging empty space selects a box, and Ctrl+A selects all notes. Vibrato scales measured variation: 0%% flat, 100%% original, 200%% double. S toggles the split tool; double-click also splits a note without changing its sound.");
+        ImGui::TextWrapped("Add voice copies selected notes at the chosen interval (+4 major third, +7 fifth, +12 octave). Select notes in one harmony to set its voice level. Remove / Delete removes selected harmony notes. Copies support pitch, vibrato and split edits; Re-detect clears them.");
+        const char* rows[][2] = {{wheelZooms_ ? "Wheel" : "Ctrl + wheel", "Zoom around the pointer"}, {wheelZooms_ ? "Ctrl + wheel" : "Wheel", "Scroll through audio"}, {"Horizontal wheel", "Scroll through audio"}, {"Navigator wheel", "Zoom around the current view"}, {"Middle-button drag", "Pan directly"}, {"Alt + wheel", "Adjust vertical scale"}, {"Drag / Shift-click", "Select / extend range"}, {"Drag inside / Alt-drag", "Move range / draw new range"}, {"Double-click", "Select all / clear full selection"}, {"Space / L", "Play-pause / toggle loop"}, {"F / Z", "Fit file / zoom to selection"}, {"Ctrl + X / C / V", "Cut / copy / paste (mix into selection)"}, {"Ctrl + Shift + V", "Replace selection with clipboard"}, {"Ctrl + T / Delete", "Trim / delete selection"}, {"Ctrl + Z / Ctrl + Shift + Z", "Undo / redo"}, {"R / Home / End", "Reverse / jump to start / end"}, {"Shift + R", "Record a new audio file"}, {"Ctrl + O / Ctrl + E", "Open audio / export audio"}, {"I / O", "Fade in / fade out selection"}, {"Insert", "Insert silence at cursor"}, {"J", "Snap selection to zero crossings"}, {"Ctrl + Shift + E", "Save selected audio (WAV/FLAC/MP3)"}};
         if (ImGui::BeginTable("keys", 2, 0, px({compact_ ? contentWidth : 510, 0}))) { for (auto& row : rows) { ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextWrapped("%s", row[0]); ImGui::TableNextColumn(); ImGui::TextWrapped("%s", row[1]); } ImGui::EndTable(); }
         ImGui::Spacing(); if (button("Back to the sound", {-1, 36}, true)) ImGui::CloseCurrentPopup(); ImGui::EndPopup();
     }
@@ -1321,7 +1783,7 @@ void Editor::modals() {
     ImGui::PopStyleVar();
     if (retryAfterPopup) retryAfterPopup();
 }
-bool Editor::animating() const { return ImGui::GetTime() - lastInteraction_ < .3 || ImGui::IsAnyItemActive() || playback_.playing() || busy_ || selecting_ || waveformBuild(document_.timeline().get()).building || view_.start != view_.targetStart || view_.span != view_.targetSpan; }
+bool Editor::animating() const { return recording_ || ImGui::GetTime() - lastInteraction_ < .3 || ImGui::IsAnyItemActive() || playback_.playing() || busy_ || pitchTimeRenderer_.active() || selecting_ || waveformBuild(document_.timeline().get()).building || view_.start != view_.targetStart || view_.span != view_.targetSpan; }
 void Editor::render() {
     if (jobDone_.exchange(false, std::memory_order_acquire)) {
         if (job_.joinable()) job_.join(); busy_.store(false);
@@ -1341,6 +1803,9 @@ void Editor::render() {
             if (jobMemoryNeeded_ && retry) { memoryNeeded_ = jobMemoryNeeded_; memoryRetry_ = std::move(retry); }
         } else if (done) done();
     }
+    pitchTimeRenderer_.update(document_.timeline(), recording_ || busy_ || bool(stretchDrag_) || pitchNoteDragging_ >= 0);
+    const auto revision = AudioFile::pitchTimeRevision();
+    if (revision != pitchTimeRevision_) { pitchTimeRevision_ = revision; overviewTimeline_ = waveformTimeline_ = nullptr; }
     auto& io = ImGui::GetIO();
     if (document_.timeline()) view_.bounds(double(std::max(selectionExtent(), rangeDrag_.active ? rangeDrag_.limit : boundaryDrag_.active ? boundaryDragLimit_ : Frame(0))));
     view_.update(io.DeltaTime);
@@ -1353,6 +1818,7 @@ void Editor::render() {
     ImGui::Begin("ColdEdit", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoScrollbar);
     shortcuts(); const float width = io.DisplaySize.x / dpi_.layout, height = io.DisplaySize.y / dpi_.layout;
     compact_ = width < 960 || height < 500;
+    ImGui::BeginDisabled(recording_);
     header(width);
     if (compact_) {
         const float top = width >= 640 ? 81.f : 130.f;
@@ -1361,13 +1827,15 @@ void Editor::render() {
             inspector({12, top}, {width - 24, height - top - 46});
             ImGui::PopStyleVar();
         } else {
-            const float canvasHeight = std::max(64.f, height - top - 108);
-            waveform({12, top}, {width - 24, canvasHeight});
+            const float canvasHeight = std::max(stretchMode_ ? 120.f : 64.f, height - top - 108);
+            if (pitchView_) pitchEditor({12, top}, {width - 24, canvasHeight});
+            else waveform({12, top}, {width - 24, canvasHeight});
             overview({12, top + 10 + canvasHeight}, {width - 24, 54});
         }
     } else {
         const float mainWidth = width - 294, canvasHeight = std::max(180.f, height - 220);
-        waveform({24, 81}, {mainWidth, canvasHeight});
+        if (pitchView_) pitchEditor({24, 81}, {mainWidth, canvasHeight});
+        else waveform({24, 81}, {mainWidth, canvasHeight});
         overview({24, 81 + canvasHeight + 18}, {mainWidth, 73});
         playbackPanel({width - 250, 81}, {226, 198});
         inspector({width - 250, 291}, {226, height - 337});
@@ -1376,7 +1844,7 @@ void Editor::render() {
     const auto performance = decimal(currentPeakBytes() / 1048576., 1) + " MB peaks  /  " + decimal(resident_ / 1048576., 0) +
 #ifdef __EMSCRIPTEN__
         " MB WASM heap";
-    webSetDirty(document_.dirty());
+    webSetDirty(document_.dirty() || recording_);
 #else
         " MB resident";
 #endif
@@ -1403,8 +1871,11 @@ void Editor::render() {
     ImGui::PushClipRect(px({24, height - 36}), px({statusRight, height}), true);
     const auto build = waveformBuild(document_.timeline().get());
     label({24, height - 27}, busy_ ? jobLabel_ + "  " + decimal(jobProgress_.load() * 100, 0) + "%" :
-        build.building ? "Building waveform  " + decimal(build.progress * 100, 0) + "%" : status_, busy_ || build.building ? teal : muted);
+        pitchTimeRenderer_.active() ? "Resampled preview / finishing audio  " + decimal(pitchTimeRenderer_.progress() * 100, 0) + "%" :
+        !pitchTimeRenderer_.error().empty() ? "Resampled preview / render failed - see BPM settings" :
+        build.building ? "Building waveform  " + decimal(build.progress * 100, 0) + "%" : status_, busy_ || build.building || pitchTimeRenderer_.active() ? teal : muted);
     ImGui::PopClipRect();
+    ImGui::EndDisabled();
     modals(); ImGui::End();
     const std::string windowTitle = "ColdEdit - " + title_ + (document_.dirty() ? " *" : ""); glfwSetWindowTitle(window_, windowTitle.c_str());
 }
@@ -1516,6 +1987,7 @@ std::string Editor::diagnostics() const {
         << ",\n  \"popup_open\": " << (ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) ? "true" : "false")
         << ",\n  \"audio_available\": " << (playback_.available() ? "true" : "false")
         << ",\n  \"playing\": " << (playback_.playing() ? "true" : "false")
+        << ",\n  \"recording\": " << (recording_ ? "true" : "false")
         << ",\n  \"position\": " << playback_.position()
         << ",\n  \"busy\": " << (busy_ ? "true" : "false")
         << ",\n  \"opening\": " << (opening_ ? "true" : "false")
@@ -1532,6 +2004,70 @@ std::string Editor::diagnostics() const {
         << ",\n  \"view_target_start\": " << view_.targetStart
         << ",\n  \"view_target_span\": " << view_.targetSpan
         << ",\n  \"wheel_zooms\": " << (wheelZooms_ ? "true" : "false")
+        << ",\n  \"stretch_mode\": " << (stretchMode_ ? "true" : "false")
+        << ",\n  \"stretch_bpm\": " << stretchBpm_
+        << ",\n  \"stretch_dragging\": " << stretchDragging_
+        << ",\n  \"stretch_rendering\": " << (pitchTimeRenderer_.active() ? "true" : "false")
+        << ",\n  \"stretch_render_error\": " << std::quoted(pitchTimeRenderer_.error())
+        << ",\n  \"stretch_start_beat\": " << (document_.timeline() && document_.timeline()->pitchTime ? document_.timeline()->pitchTime->time.startBeat() : 0)
+        << ",\n  \"stretch_anchors\": [";
+    if (const auto t = document_.timeline(); t && t->pitchTime) {
+        bool comma = false;
+        for (const auto& a : t->pitchTime->time.anchors) {
+            if (comma) out << ","; comma = true;
+            out << "{\"source\":" << a.sourceFrame << ",\"beat\":" << a.beat << "}";
+        }
+    }
+    out << "],\n  \"stretch_controls\": [";
+    for (std::size_t i = 0; i < stretchControlPositions_.size(); ++i) {
+        if (i) out << ",";
+        out << "{\"x\":" << stretchControlPositions_[i].x << ",\"y\":" << stretchControlPositions_[i].y << "}";
+    }
+    out << "],\n  \"pitch_controls\": [";
+    for (std::size_t i = 0; i < pitchControlPositions_.size(); ++i) {
+        if (i) out << ",";
+        out << "{\"x\":" << pitchControlPositions_[i].x << ",\"y\":" << pitchControlPositions_[i].y << "}";
+    }
+    out << "],\n  \"note_controls\": [";
+    for (std::size_t i = 0; i < noteControlPositions_.size(); ++i) {
+        if (i) out << ",";
+        out << "{\"x\":" << noteControlPositions_[i].x << ",\"y\":" << noteControlPositions_[i].y << "}";
+    }
+    const auto pitchState = document_.timeline() ? document_.timeline()->pitchTime : nullptr;
+    out << "],\n  \"pitch_notes\": [";
+    if (pitchState) for (std::size_t i = 0; i < pitchState->noteCount(); ++i) {
+        if (i) out << ",";
+        const auto& note = pitchState->noteAt(i);
+        const auto voice = pitchState->locateNote(i).first;
+        const auto position = i < notePositions_.size() ? notePositions_[i] : NotePosition{};
+        out << "{\"first\":" << note.first << ",\"last\":" << note.last
+            << ",\"midi\":" << note.midi << ",\"shift\":" << note.shift
+            << ",\"voice\":" << voice << ",\"gain\":" << (voice ? pitchState->harmonies[voice - 1].gain : 1)
+            << ",\"inferred\":" << note.inferredFraction
+            << ",\"vibrato\":" << note.vibrato << ",\"selected\":" << (pitchSelection_.contains(pitchState->noteKey(i)) ? "true" : "false")
+            << ",\"output_first\":" << pitchState->time.outputAt(double(note.first))
+            << ",\"output_last\":" << pitchState->time.outputAt(double(note.last))
+            << ",\"x\":" << position.centre.x << ",\"y\":" << position.centre.y << ",\"height\":" << position.height << "}";
+    }
+    out << "]"
+        << ",\n  \"pitch_view\": " << (pitchView_ ? "true" : "false")
+        << ",\n  \"note_selected\": " << pitchNoteSelected_
+        << ",\n  \"note_dragging\": " << pitchNoteDragging_
+        << ",\n  \"notes_selected\": " << pitchSelection_.size()
+        << ",\n  \"note_marquee\": " << (pitchMarquee_ ? "true" : "false")
+        << ",\n  \"note_split_mode\": " << (pitchSplitMode_ ? "true" : "false")
+        << ",\n  \"note_vibrato_mixed\": " << (pitchVibratoMixed_ ? "true" : "false")
+        << ",\n  \"pitch_ruler_y\": " << pitchRulerY_
+        << ",\n  \"pitch_plot\": {\"left\":" << pitchPlotMin_.x << ",\"top\":" << pitchPlotMin_.y
+            << ",\"right\":" << pitchPlotMax_.x << ",\"bottom\":" << pitchPlotMax_.y << "}"
+        << ",\n  \"pitch_low\": " << pitchLow_
+        << ",\n  \"pitch_high\": " << pitchHigh_
+        << ",\n  \"pitch_step\": " << pitchStep_
+        << ",\n  \"pitch_analyzed\": " << (pitchState && pitchState->analysis ? "true" : "false")
+        << ",\n  \"pitch_semitones\": " << (pitchState ? pitchState->pitch.semitones : 0)
+        << ",\n  \"formant_semitones\": " << (pitchState ? pitchState->pitch.formantSemitones : 0)
+        << ",\n  \"preserve_formants\": " << (pitchState && !pitchState->pitch.preserveFormants ? "false" : "true")
+        << ",\n  \"formant_base_hz\": " << (pitchState ? pitchState->pitch.formantBaseHz : 0)
         << ",\n  \"vertical_zoom\": " << verticalZoom_
         << ",\n  \"follow_playback\": " << (follow_ ? "true" : "false")
         << ",\n  \"title\": " << std::quoted(title_)

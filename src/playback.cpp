@@ -1,4 +1,5 @@
 #include "playback.hpp"
+#include "recording.hpp"
 #define MINIAUDIO_IMPLEMENTATION
 #define MA_NO_DECODING
 #define MA_NO_ENCODING
@@ -11,6 +12,83 @@
 #include <chrono>
 
 namespace coldedit {
+#ifndef __EMSCRIPTEN__
+struct MicrophoneRecording::State {
+    ma_device device{};
+    bool initialized = false;
+    AudioRecording audio{48000, 1};
+    // Capture callback only copies to this SPSC ring. Disk I/O runs on the worker.
+    static constexpr std::size_t capacity = 131072;
+    std::array<float, capacity> ring{};
+    std::atomic<std::uint64_t> read{0}, write{0};
+    std::atomic<Frame> count{0};
+    std::atomic<float> peak{0};
+    std::atomic<bool> overflow{false}, disconnected{false}, stopping{false}, failed{false};
+    std::string message;
+    std::jthread worker;
+    void capture(const float* input, unsigned frames) noexcept {
+        if (stopping.load() || overflow.load() || failed.load()) return;
+        const auto w = write.load(std::memory_order_relaxed), r = read.load(std::memory_order_acquire);
+        if (!input || frames > capacity - (w - r)) { overflow.store(true); return; }
+        float p = 0;
+        for (unsigned i = 0; i < frames; ++i) { ring[(w + i) % capacity] = input[i]; p = std::max(p, std::abs(input[i])); }
+        peak.store(p); write.store(w + frames, std::memory_order_release);
+    }
+    void produce(std::stop_token stop) {
+        try {
+            while (true) {
+                const auto r = read.load(std::memory_order_relaxed), w = write.load(std::memory_order_acquire);
+                if (w > r) {
+                    const auto n = std::min<std::uint64_t>({w - r, 4096, capacity - r % capacity});
+                    audio.append(ring.data() + r % capacity, unsigned(n));
+                    count.store(audio.frames()); read.store(r + n, std::memory_order_release);
+                } else {
+                    if (overflow.load()) throw std::runtime_error("Recording stopped because capture could not keep up. The captured audio has been kept.");
+                    if (disconnected.load()) throw std::runtime_error("The microphone disconnected. The captured audio has been kept.");
+                    if (stop.stop_requested()) break;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                }
+            }
+        } catch (const std::exception& e) { message = e.what(); failed.store(true, std::memory_order_release); }
+    }
+    void stop() {
+        stopping.store(true);
+        if (initialized) { ma_device_uninit(&device); initialized = false; }
+        worker.request_stop();
+        if (worker.joinable()) worker.join();
+    }
+    ~State() { stop(); }
+};
+MicrophoneRecording::MicrophoneRecording(bool manualInput) : state_(std::make_unique<State>()) {
+    auto& s = *state_;
+    if (manualInput) {
+        s.worker = std::jthread([&s](std::stop_token stop) { s.produce(stop); });
+        return;
+    }
+    auto cfg = ma_device_config_init(ma_device_type_capture);
+    cfg.capture.format = ma_format_f32; cfg.capture.channels = 1; cfg.sampleRate = 48000;
+    cfg.pUserData = &s;
+    cfg.dataCallback = [](ma_device* dev, void*, const void* input, ma_uint32 count) {
+        static_cast<State*>(dev->pUserData)->capture(static_cast<const float*>(input), count);
+    };
+    cfg.notificationCallback = [](const ma_device_notification* notification) {
+        auto* state = static_cast<State*>(notification->pDevice->pUserData);
+        if (notification->type == ma_device_notification_type_stopped && !state->stopping.load()) state->disconnected.store(true);
+    };
+    if (ma_device_init(nullptr, &cfg, &s.device) != MA_SUCCESS)
+        throw std::runtime_error("Cannot access the default microphone. Check your input device and microphone permissions.");
+    s.initialized = true;
+    s.worker = std::jthread([&s](std::stop_token stop) { s.produce(stop); });
+    if (ma_device_start(&s.device) != MA_SUCCESS) throw std::runtime_error("Could not start the microphone.");
+}
+MicrophoneRecording::~MicrophoneRecording() = default;
+void MicrophoneRecording::capture(const float* samples, unsigned frames) noexcept { state_->capture(samples, frames); }
+std::shared_ptr<AudioFile> MicrophoneRecording::finish() { state_->stop(); return state_->audio.finish(); }
+Frame MicrophoneRecording::frames() const { return state_->count.load(); }
+float MicrophoneRecording::level() const { return state_->peak.load(); }
+bool MicrophoneRecording::failed() const { return state_->failed.load(std::memory_order_acquire); }
+std::string MicrophoneRecording::error() const { return state_->message; }
+#endif
 struct Playback::Device { ma_device handle{}; bool initialized = false; };
 Playback::Playback(bool manualRender) : device_(std::make_unique<Device>()) {
     static_assert(std::atomic<std::uint64_t>::is_always_lock_free);

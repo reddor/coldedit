@@ -1,0 +1,6 @@
+# Header-only MIT dependencies, pinned and verified like the codec archives.
+coldedit_codec(signalsmith_stretch https://github.com/Signalsmith-Audio/signalsmith-stretch/archive/88061fd4eda56a2353c5d65c74aa3f4ccf76f9da.tar.gz 4dc468e46f208415ca66567cacfd8fb22b01d321fcdb4c2452278fee2426b09d)
+coldedit_codec(signalsmith_linear https://github.com/Signalsmith-Audio/linear/archive/7bb1c8f36794d6980080ce817c91f8da8fe56a66.tar.gz 07dfbe843844f6f15b732e6f7e53c9fcfc9f224b2581e4fc572b7ef922037034)
+FetchContent_MakeAvailable(signalsmith_stretch signalsmith_linear)
+target_include_directories(coldedit_core SYSTEM PRIVATE
+  ${signalsmith_stretch_SOURCE_DIR} ${signalsmith_linear_SOURCE_DIR}/include)

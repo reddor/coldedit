@@ -19,5 +19,6 @@ void webOpenPicker(bool pasteFromFile = false);
 bool webDownload(const std::filesystem::path& path);
 void webClearImport();
 void webSetDirty(bool dirty);
+void webShowRecorder();
 #endif
 }

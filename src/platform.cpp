@@ -55,6 +55,7 @@ std::uint64_t residentBytes() {
 EM_JS(void, browserPicker, (bool pasteFromFile), { window.coldeditWeb.pickFile(!!pasteFromFile); });
 EM_JS(void, browserClearImport, (), { window.coldeditWeb.clearImport(); });
 EM_JS(void, browserSetDirty, (bool dirty), { window.coldeditWeb.dirty = !!dirty; });
+EM_JS(void, browserShowRecorder, (), { window.coldeditRecorder.show(); });
 EM_JS(int, downloadBrowserFile, (const char* path), { return window.coldeditWeb.download(UTF8ToString(path)) ? 1 : 0; });
 EM_JS(int, loadBrowserWheelZoom, (), {
     try { return localStorage.getItem('coldedit.wheelZooms') === 'false' ? 0 : 1; }
@@ -81,6 +82,7 @@ bool saveWebAudioBudget(unsigned mib) { return saveBrowserAudioBudget(mib) != 0;
 void webOpenPicker(bool pasteFromFile) { browserPicker(pasteFromFile); }
 void webClearImport() { browserClearImport(); }
 void webSetDirty(bool dirty) { browserSetDirty(dirty); }
+void webShowRecorder() { browserShowRecorder(); }
 bool webDownload(const std::filesystem::path& path) { return downloadBrowserFile(utf8(path).c_str()) != 0; }
 bool loadWheelZoomPreference() { return loadBrowserWheelZoom() != 0; }
 bool saveWheelZoomPreference(bool zoom) { return saveBrowserWheelZoom(zoom) != 0; }

@@ -58,6 +58,10 @@ void frame() {
 
 extern "C" {
 EMSCRIPTEN_KEEPALIVE int coldedit_can_import() { return editor && editor->canImport(); }
+EMSCRIPTEN_KEEPALIVE int coldedit_record_begin(unsigned rate, unsigned channels) { return editor && editor->beginRecording(rate, channels); }
+EMSCRIPTEN_KEEPALIVE int coldedit_record_append(const float* samples, unsigned frames) { return editor && editor->appendRecording(samples, frames); }
+EMSCRIPTEN_KEEPALIVE int coldedit_record_end(int keep) { return editor && editor->endRecording(keep != 0); }
+EMSCRIPTEN_KEEPALIVE const char* coldedit_record_error() { return editor ? editor->recordingError().c_str() : "Editor unavailable."; }
 EMSCRIPTEN_KEEPALIVE void coldedit_open(const char* path) { if (editor) editor->requestOpen(coldedit::fromUtf8(path)); }
 EMSCRIPTEN_KEEPALIVE void coldedit_paste_file(const char* path) { if (editor) editor->requestPasteFile(coldedit::fromUtf8(path)); }
 EMSCRIPTEN_KEEPALIVE const char* coldedit_diagnostics() {

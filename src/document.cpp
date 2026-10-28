@@ -1,4 +1,5 @@
 #include "document.hpp"
+#include "pitch_time.hpp"
 #include <unordered_set>
 #include "codecs.hpp"
 #include <algorithm>
@@ -90,6 +91,10 @@ Timeline Timeline::range(Frame first, Frame last) const {
     result.pieces = slice(first, last); result.rebuild(); return result;
 }
 Peak Timeline::peak(Frame first, Frame last, unsigned c) const noexcept {
+    return c < channels ? mixPeak(first, last, c == 0 ? 1 : 0, c == 1 ? 1 : 0) : Peak{};
+}
+Peak Timeline::mixPeak(Frame first, Frame last, double left, double right) const noexcept {
+    if (channels == 1) right = 0;
     first = std::clamp(first, Frame(0), frames); last = std::clamp(last, first, frames);
     Peak out{std::numeric_limits<float>::max(), -std::numeric_limits<float>::max()};
     std::size_t i = std::size_t(std::upper_bound(ends.begin(), ends.end(), first) - ends.begin());
@@ -99,9 +104,9 @@ Peak Timeline::peak(Frame first, Frame last, unsigned c) const noexcept {
         const auto& p = pieces[i];
         const Frame a = std::max(first, start) - start, b = std::min(last, ends[i]) - start;
         if (a >= b) continue;
-        if (c >= channels) return {};
         if (!p.source) { out.lo = std::min(out.lo, 0.f); out.hi = std::max(out.hi, 0.f); continue; }
-        const auto mixed = p.source->mixPeak(p.offset + (p.reversed ? p.length - b : a), p.offset + (p.reversed ? p.length - a : b), p.mix[c][0], p.mix[c][1]);
+        const auto mixed = p.source->mixPeak(p.offset + (p.reversed ? p.length - b : a), p.offset + (p.reversed ? p.length - a : b),
+            left * p.mix[0][0] + right * p.mix[1][0], left * p.mix[0][1] + right * p.mix[1][1]);
         // Bound each monotonic envelope over this pixel's range. This preserves
         // source peak caching and never hides a transient between the endpoints.
         double lowGain = 1, highGain = 1;
@@ -118,11 +123,12 @@ Peak Timeline::peak(Frame first, Frame last, unsigned c) const noexcept {
     }
     return out.lo <= out.hi ? out : Peak{};
 }
-void Document::open(std::shared_ptr<AudioFile> file) {
+void Document::open(std::shared_ptr<AudioFile> file, bool saved) {
     auto t = std::make_shared<Timeline>();
     t->sampleRate = file->sampleRate; t->channels = file->channels;
     t->pieces.push_back({file, 0, file->frames}); t->rebuild();
     current_ = t; saved_ = t; history_ = {{t, "Open"}}; historyIndex_ = 0;
+    if (!saved) saved_.reset();
 }
 void Document::clearHistory() {
     // Keep the exact current revision, so both dirty and clean documents stay so.
@@ -132,13 +138,30 @@ void Document::clearHistory() {
 }
 std::uint64_t Document::reclaimableAudioBytes(const std::vector<Piece>& retained) const {
     std::unordered_set<const AudioFile*> live, counted;
-    const auto keep = [&](const std::vector<Piece>& pieces) { for (const auto& p : pieces) if (p.source) live.insert(p.source.get()); };
-    if (current_) keep(current_->pieces);
-    keep(retained);
+    const auto keep = [&](const auto& source) { live.insert(source.get()); };
+    if (current_) visitAudioSources(*current_, keep);
+    Timeline extra; extra.pieces = retained; visitAudioSources(extra, keep);
     std::uint64_t bytes = 0;
-    for (const auto& state : history_) for (const auto& p : state.timeline->pieces)
-        if (p.source && !live.contains(p.source.get()) && counted.insert(p.source.get()).second) bytes += p.source->storageBytes();
+    const auto count = [&](const auto& source) {
+        if (!live.contains(source.get()) && counted.insert(source.get()).second) bytes += source->storageBytes();
+    };
+    for (const auto& state : history_) visitAudioSources(*state.timeline, count);
     return bytes;
+}
+void visitAudioSources(const Timeline& timeline, const std::function<void(const std::shared_ptr<AudioFile>&)>& visit) {
+    std::unordered_set<const AudioFile*> seen;
+    std::function<void(const Timeline&)> walk;
+    std::function<void(const std::shared_ptr<AudioFile>&)> audio = [&](const auto& source) {
+        if (!source || !seen.insert(source.get()).second) return;
+        visit(source);
+        if (auto map = source->pitchTimeState()) walk(*map->source);
+        if (auto result = source->pitchTimeResult()) audio(result);
+    };
+    walk = [&](const Timeline& t) {
+        for (const auto& p : t.pieces) audio(p.source);
+        if (t.pitchTime) walk(*t.pitchTime->source);
+    };
+    walk(timeline);
 }
 void Document::commit(std::shared_ptr<Timeline> t, std::string label) {
     t->rebuild();
@@ -211,6 +234,7 @@ void fadeRange(Timeline& t, Frame first, Frame last, bool out, FadeCurve curve) 
 void Document::fade(Frame first, Frame last, bool out, FadeCurve curve) {
     if (!current_ || first >= last) return;
     auto t = std::make_shared<Timeline>(*current_); fadeRange(*t, first, last, out, curve);
+    t->pitchTime.reset();
     commit(std::move(t), out ? "Fade out" : "Fade in");
 }
 void Document::fadeEdges(Frame first, Frame last, Frame length) {
@@ -218,6 +242,7 @@ void Document::fadeEdges(Frame first, Frame last, Frame length) {
     first = std::clamp(first, Frame(0), current_->frames); last = std::clamp(last, first, current_->frames);
     const Frame n = std::min(length, std::max<Frame>(1, (last - first) / 2));
     auto t = std::make_shared<Timeline>(*current_);
+    t->pitchTime.reset();
     fadeRange(*t, first, first + n, false, FadeCurve::Smooth); fadeRange(*t, last - n, last, true, FadeCurve::Smooth);
     commit(std::move(t), "Fade edges");
 }
@@ -227,6 +252,7 @@ void Document::channelTool(ChannelTool tool, Frame first, Frame last) {
     if (current_->channels != 2 && tool != ChannelTool::Invert && tool != ChannelTool::InvertLeft) return;
     if (!invert) { first = 0; last = current_->frames; }
     auto t = std::make_shared<Timeline>(*current_);
+    t->pitchTime.reset();
     auto pieces = t->slice(first, last);
     for (auto& p : pieces) {
         if (tool == ChannelTool::Swap) std::swap(p.mix[0], p.mix[1]);
@@ -284,6 +310,7 @@ static void put16(std::ostream& f, std::uint16_t v) { char b[2] = {char(v), char
 static void put32(std::ostream& f, std::uint32_t v) { char b[4] = {char(v), char(v >> 8), char(v >> 16), char(v >> 24)}; f.write(b, 4); }
 void exportAudio(const Timeline& t, const std::filesystem::path& path, ExportFormat format, std::atomic<float>* progress, std::stop_token stop) {
     if (std::filesystem::exists(path)) throw std::runtime_error("Choose a new file name. ColdEdit never overwrites an existing audio file.");
+    resolvePitchTime(t, progress, stop); // Exports always use the finished pitch/time render.
     const unsigned bits = exportBits(format);
     const bool flac = isFlac(format);
     const bool wav = isWav(format);

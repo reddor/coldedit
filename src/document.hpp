@@ -20,24 +20,29 @@ struct Piece {
     std::vector<FadeEnvelope> fades{};
     std::array<std::array<double, 2>, 2> mix{{{1, 0}, {0, 1}}};
 };
+struct PitchTimeState;
 struct Timeline {
     std::vector<Piece> pieces;
     std::vector<Frame> ends;
     Frame frames = 0;
     unsigned sampleRate = 48000, channels = 2;
+    // Immutable pitch/time controls travel with rendered audio through undo/redo.
+    std::shared_ptr<const PitchTimeState> pitchTime;
     void rebuild();
     float sample(Frame frame, unsigned channel) const noexcept;
     Peak peak(Frame first, Frame last, unsigned channel) const noexcept;
+    Peak mixPeak(Frame first, Frame last, double left, double right) const noexcept;
     std::vector<Piece> slice(Frame first, Frame last) const;
     Timeline range(Frame first, Frame last) const;
 };
+void visitAudioSources(const Timeline& timeline, const std::function<void(const std::shared_ptr<AudioFile>&)>& visit);
 enum class Effect { Silence, Reverse, Gain };
 enum class ChannelTool { ExtractLeft, ExtractRight, Mono, Swap, Invert, InvertLeft, InvertRight };
 void fadeRange(Timeline& timeline, Frame first, Frame last, bool out, FadeCurve curve = FadeCurve::Linear);
 Frame zeroCrossing(const Timeline& timeline, Frame frame, Frame radius);
 class Document {
 public:
-    void open(std::shared_ptr<AudioFile> file);
+    void open(std::shared_ptr<AudioFile> file, bool saved = true);
     void replace(Frame first, Frame last, const std::vector<Piece>& replacement, std::string label, Frame edgeFrames = 0);
     void trim(Frame first, Frame last, Frame edgeFrames = 0);
     void effect(Frame first, Frame last, Effect effect, float gain = 1.f);

@@ -20,7 +20,7 @@ X11 (or XWayland). It uses the system's C/C++, graphics and audio runtime
 libraries. Open/export uses a path-entry dialog; drag-and-drop also works.
 
 Drop a WAV, FLAC or MP3 onto the window, or click **ColdEdit > Open audio**.
-The editor starts empty until you open your audio.
+The editor starts empty until you open or record audio.
 
 A WebAssembly build is also available in `dist/Web` and `dist/ColdEdit-web.zip`.
 It runs locally in your browser, with a **64 MiB input limit** and a
@@ -35,6 +35,8 @@ browser-specific memory behavior. Smaller screens use a compact toolbar and a
 
 ## What works
 
+- Microphone recording on desktop, plus microphone or screen-sharing audio in
+  the browser. Takes open as new unsaved documents for editing and export.
 - Mono and stereo RIFF/WAVE: 8/16/24/32-bit PCM, 32-bit float, standard PCM/float
   extensible headers with matching valid and container bit depths.
 - Mono/stereo FLAC import and 16/24-bit FLAC export using libFLAC 1.5.0, plus
@@ -80,11 +82,86 @@ browser-specific memory behavior. Smaller screens use a compact toolbar and a
 - Cleanup dialog with Preview, Bypass, Apply, and cancellation: per-channel DC
   removal, linked peak normalization from -60 to 0 dBFS, and 12 dB/octave
   Butterworth high-pass/low-pass filters with adjustable cutoff.
+- **Time-stretch mode** (`T`, or **Process > Time stretch / tempo**) adds a beat
+  ruler below the time ruler. Click to anchor the audio at that position, drag
+  an anchor to stretch its neighbouring intervals, and right-click to remove it.
+  Add at least two anchors to stretch. Audio before the first and after the last
+  keeps its length when an anchor moves; moving an outer anchor changes the file
+  duration. The file starts at time zero, with the beat ruler following its leading
+  edge. Drags snap to quarter beats; hold Alt for free timing. Audio and waveform
+  previews update immediately with neutral pitch/formants, and releasing creates one undo step. The editor
+  stays usable while a cancellable worker finishes the pitch-preserving audio.
+- Click **BPM** on the beat ruler for source tempo (20–400 BPM), **Detect BPM**,
+  and **Find transient anchors**. Before adding anchors, editing pitch/formants
+  or detecting notes, BPM calibrates the grid.
+  Afterwards **Apply BPM** changes the whole file's speed while retaining each
+  anchor's beat assignment. Automatic discovery adds anchors at waveform attacks
+  without moving audio or replacing manual anchors; it also estimates source BPM
+  when starting a new map. Tempo estimates can have half/double-time ambiguity;
+  silence or unsteady audio may need manual BPM. Detection uses linked-channel
+  energy and keeps up to 2048 of the strongest transients.
 - The ColdEdit logo opens a popup menu for file, editing, selection, processing,
   playback, and view commands. One toolbar combines playback controls with
   Undo/Redo, Cut/Copy/Paste, Delete, Trim, Fit, and Zoom to selection. Open and
   Export live in the menu. Playhead, duration, monitor gain, and output meters
   stay visible at the top of the right sidebar while the inspector scrolls.
+- **Pitch / formants** (`P`, or **Process > Pitch / formants**) transposes the
+  whole file by -24 to +24 semitones without changing duration. Decimal values
+  allow fine tuning (0.01 semitone is one cent). **Preserve formants** is on by
+  default; **Formant shift** adjusts tonal character independently by -12 to +12
+  semitones. The optional voice/instrument pitch in Hz guides formant processing;
+  leave it at 0 for automatic estimation. **Apply** renders on a cancellable
+  worker before changing the audio, with one undo step. **Reset pitch / formants**
+  keeps timing edits, and **Reset stretch** keeps pitch/formant settings.
+- **Pitch editor** (`N`, or **Process > Pitch editor**) detects notes in a single
+  voice or melodic instrument. Controls share one toolbar row on desktop and
+  expand into rows in compact views. Choose **Detect**, then drag a note up or
+  down. **Snap** targets semitones; hold **Alt** for fine tuning and **Escape**
+  to cancel a drag. **Correct note / all** moves note centres to the nearest
+  semitone while retaining vibrato and pitch variation. Click empty space or
+  press **Escape** to clear selection; correction and vibrato then target all
+  notes. Ctrl-click toggles individual notes, Shift-click selects a range, and
+  dragging empty space draws a selection box. **All notes** / Ctrl+A selects
+  every note. Dragging a selected group transposes it together, preserving
+  intervals and creating one undo step. Escape cancels drags and box selection.
+  **Vibrato** scales measured pitch variation around each note's centre: 0%
+  flattens it, 100% retains the original, and 200% doubles it. This includes
+  measured bends/drift; estimated regions are left unchanged. Ctrl-click the
+  slider to type a percentage. The curve previews while dragging; release to
+  render one undo step, or Escape to cancel. Multiple notes can share a setting.
+  **Split** (`S`) followed by a click, or a double-click on a note, splits at
+  that time. Each half must be at least 20 ms long. Splits preserve the existing
+  pitch, vibrato and sound, and remain aligned through tempo changes. The halves
+  can then be edited independently, with a short transition at their shared
+  boundary. Splitting is undoable and does not render or modify audio by itself.
+  **Reset note / all** restores pitch and 100% vibrato while retaining splits;
+  **Re-detect** runs analysis again and resets note edits, splits and harmony voices.
+  **Add voice** duplicates selected notes into an independently editable harmony
+  (with no selection, it copies all original notes). Set the interval first:
+  +3 semitones for a minor third, +4 for a major third, +7 for a fifth, +12 for
+  an octave; negative intervals go lower. Select notes from one voice when
+  duplicating. Add as many harmony voices as needed within the shared 8192-note
+  limit; splitting a note keeps both halves in the same voice.
+  Purple notes labelled H1, H2, and so on support the same dragging, multi-selection,
+  vibrato and splitting. Right-click overlapping notes to choose a voice.
+  Select notes in one harmony and use **Lvl** to change
+  that entire voice's level (35% initially, 0% to mute, 100% full source level).
+  Ctrl-click to enter a level; Escape cancels. **Remove** / Delete / Backspace
+  removes selected harmony notes while retaining original notes. All voice
+  changes are undoable and included in playback and export. Copies follow
+  shared timing and formant settings and always render from the original source.
+  Audible regions with uncertain pitch borrow estimates from nearby sustained
+  notes. Amber dashed contour sections show these estimates; mostly estimated
+  notes have a muted amber fill. Silence stays empty. Short tracking outliers
+  are replaced with context, and the contour breaks across note boundaries
+  instead of drawing tall connecting spikes. Estimates remain editable and
+  participate in correction and export. With no reliable notes anywhere in the
+  file, there is no pitch reference to borrow.
+  The pitch contour, piano lanes and **Fit notes** help navigate; Alt+wheel
+  zooms the pitch range. `T` shows the shared timing ruler in either editor.
+  Detection and each completed pitch edit are undoable. Note edits render on a
+  cancellable worker and use the same formant settings, source and export path
+  as whole-file transposition. Global transposition adds to individual shifts.
 - Cancellable background export to 16-bit PCM, 24-bit PCM, or 32-bit float WAV,
   16/24-bit FLAC (compression level 5), and MP3.
   WAV/FLAC preserve the original sample rate. Export always writes a **new** file. Existing
@@ -114,6 +191,54 @@ Range dragging preserves length even when
 zero-crossing snapping is enabled. Mixed audio keeps float headroom; signals
 above full scale can clip in playback or integer WAV export. Normalize if needed.
 
+Pitch and time processing share Signalsmith Stretch 1.3.2 and retain the original
+source for subsequent pitch, formant, anchor and BPM changes. They render together
+in one streaming pass, avoiding repeated processing of rendered audio. Harmony
+voices run independent processors and mix into the same output, with short
+fades at their edges. This creates chords from monophonic material; it does not
+separate existing chords into voices. Harmony levels add to the original and
+retain floating-point headroom. With neutral pitch
+and formants, stretch playback uses fast linear resampling while rendering,
+temporarily changing pitch; finished audio replaces it automatically without
+changing edit history. New anchor edits supersede pending renders. With pitch or
+formant changes active, anchor drags preview the waveform and audio renders on
+release; playback pauses for the render and resumes after success if it was playing.
+Cancellation or failure leaves the document and history unchanged. Every export
+and destructive audio process uses the finished result. Undo/redo restores audio
+and all pitch/time controls. Hiding either editor or the stretch ruler keeps all edits. Other audio
+edits bake pitch and timing and clear their controls; undo restores them.
+Pitch/time controls and note analysis are session-only, like edit history.
+Monophonic detection uses YIN over 50-1200 Hz with roughly 10 ms contour spacing
+and a 60 ms minimum note length. Chords, mixes, breathy sounds and strong pitch
+slides can produce missing notes or octave errors; polyphonic detection is not
+included. Analysis is bounded to about 2.7 hours
+and 8192 notes including harmony copies; trim a shorter passage if needed. Note regions use source
+coordinates, so corrections follow tempo and anchor changes. Individual note
+shifts allow +/-24 semitones, with short ramps at their boundaries.
+**Reset pitch / formants** retains note edits, and **Reset note / all** retains
+global transposition and timing. Formant quality depends on the material and shift amount.
+Individual segments support 1/8–8 times their source duration; moderate changes
+give better sound quality. Native renders stream to temporary mapped audio;
+browser renders share the existing audio memory budget, including retained sources.
+
+## Recording
+
+Click the red record button, use **ColdEdit > Record audio**, or press **Shift+R**.
+The native app records the default microphone as 48 kHz mono float PCM. Choose
+your default input in the operating system's audio settings. In the browser,
+choose **Microphone** or **System / tab audio**; enable **Share audio** in the
+screen-sharing picker. Browser and OS support determine which shared audio
+sources are available. See [WEB.md](WEB.md#record-audio).
+
+The recorder shows elapsed time and an input meter. **Stop and keep** opens a new
+take for editing; **Discard take** preserves the previous document. Existing
+unsaved changes prompt for export before starting. The take stays unsaved until
+you export it, including after undo. Input is not played through the speakers.
+Desktop capture uses a bounded ring and a disk-writing worker; temporary audio
+is removed when no document, clipboard or history needs it. Browser capture
+shares the audio memory budget and keeps the captured prefix when the budget
+is reached. Ending screen sharing also stops and keeps the take.
+
 ## Controls
 
 | Input | Action |
@@ -142,8 +267,12 @@ above full scale can clip in playback or integer WAV export. Normalize if needed
 | Ctrl+Shift+V | Replace selection with clipboard audio |
 | Delete / Ctrl+T | Delete / trim selection |
 | R | Reverse selected range or file |
+| Shift+R | Record a new audio file |
 | I / O | Fade in / fade out selection |
 | J | Snap selection/cursor to nearby zero crossings |
+| T | Show / hide the time-stretch beat ruler |
+| P | Open whole-file pitch and formant controls |
+| N | Switch waveform / monophonic pitch editor |
 | Insert | Insert silence at cursor |
 | Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y | Undo / redo |
 | Escape | Clear selection |
@@ -177,7 +306,7 @@ shell is optional.
 ```
 
 The first configure fetches pinned, SHA-256-verified source archives. If present,
-`third_party/{imgui,glfw,miniaudio,flac,dr_libs,lame}.tar.gz` are used as offline caches. This
+`third_party/{imgui,glfw,miniaudio,flac,dr_libs,lame,signalsmith_stretch,signalsmith_linear}.tar.gz` are used as offline caches. This
 workspace may include these caches. They are ignored by Git; GitHub Actions
 downloads the same verified archives on clean runners.
 
@@ -335,7 +464,7 @@ active and waits for OS events while idle.
 ## Deliberate limits
 
 This is a single-document waveform editor. It does not yet include
-recording, multitrack mixing, effects plugins, spectrum tools,
+multitrack mixing, effects plugins, spectrum tools,
 project persistence, or RF64. RIFF exports are limited to 4 GiB. History is
 session-only; export before quitting to keep edits. WAV metadata chunks are
 not copied to exports.
@@ -361,7 +490,13 @@ described below.
 - `src/codecs.*`, `src/dr_mp3.c`: streaming FLAC/MP3 decoding and encoding.
 - `src/document.*`: piece table, editing/history, normalization scan, export.
 - `src/processing.*`: cleanup analysis and streaming filter processing.
+- `src/stretch.*`: beat/source timing maps, transient discovery, and tempo estimation.
+- `src/pitch_analysis.*`: streaming monophonic detection, voiced contour and note regions.
+- `src/pitch_editor.cpp`: piano lanes, note dragging and chromatic correction.
+- `src/pitch_time.*`: shared pitch/time state, streaming transposition and formant
+  processing, deferred render resolution, and background render queue.
 - `src/playback.*`: streaming worker, SPSC ring, miniaudio callback.
+- `src/recording.hpp`, `src/playback.cpp`: microphone capture and disk writer.
 - `src/viewport.hpp`: double-precision camera and exponential animation.
 - `src/interaction.hpp`: DPI metrics and selection-boundary dragging.
 - `src/scaled_draw.hpp`: logical-coordinate drawing at the current DPI scale.
@@ -378,6 +513,9 @@ Pinned dependencies: [Dear ImGui 1.91.9b](https://github.com/ocornut/imgui/tree/
 [dr_mp3 0.7.4](https://github.com/mackron/dr_libs/tree/8159355353a9baeea04416df9626ac2b9afbf97b)
 (public domain or MIT No Attribution), and [LAME 3.100](https://lame.sourceforge.io/)
 (LGPL v2 or later; encoder only).
+Time stretching uses [Signalsmith Stretch 1.3.2](https://github.com/Signalsmith-Audio/signalsmith-stretch/tree/88061fd4eda56a2353c5d65c74aa3f4ccf76f9da)
+with [Signalsmith Linear](https://github.com/Signalsmith-Audio/linear/tree/7bb1c8f36794d6980080ce817c91f8da8fe56a66)
+(both MIT; pinned, SHA-256-verified archives). Both license notices are packaged.
 Integration follows the [ImGui GLFW/OpenGL example](https://github.com/ocornut/imgui/tree/v1.91.9b/examples/example_glfw_opengl3)
 and [miniaudio device callback documentation](https://miniaud.io/docs/manual/index.html).
 Their license texts are included in packaged builds. System fonts are loaded

@@ -1,13 +1,16 @@
 #pragma once
 #include "document.hpp"
 #include "processing.hpp"
+#include "pitch_time.hpp"
 #include "playback.hpp"
+#include "recording.hpp"
 #include "viewport.hpp"
 #include "imgui.h"
 #include "interaction.hpp"
 #include "scaled_draw.hpp"
 #include <functional>
 #include <mutex>
+#include <set>
 struct GLFWwindow;
 namespace coldedit {
 class Editor {
@@ -21,6 +24,7 @@ public:
     void requestOpen(const std::filesystem::path& path);
     void requestPasteFile(const std::filesystem::path& path);
     void requestClose();
+    void requestRecording();
     void loadSmokeAudio();
     bool shouldClose() const { return close_; }
     bool animating() const;
@@ -29,7 +33,11 @@ public:
     bool smokePassed() const { return smokePassed_ && smokeEdgesPassed_ && smokeBoundaryChecks_ == 4; }
     std::string diagnostics() const;
 #ifdef __EMSCRIPTEN__
-    bool canImport() const { return !busy_ && !confirmDiscard_ && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId); }
+    bool canImport() const { return !recording_ && !busy_ && !confirmDiscard_ && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId); }
+    bool beginRecording(unsigned rate, unsigned channels);
+    bool appendRecording(const float* samples, unsigned frames);
+    bool endRecording(bool keep);
+    const std::string& recordingError() const { return recordingError_; }
 #endif
 private:
     GLFWwindow* window_;
@@ -63,6 +71,15 @@ private:
     bool pendingClose_ = false, confirmDiscard_ = false, help_ = false, openPathPopup_ = false;
     bool continueAfterExport_ = false;
     bool opening_ = false;
+    bool recording_ = false, recordPopup_ = false, pendingRecord_ = false;
+    std::string recordingError_;
+#ifdef __EMSCRIPTEN__
+    std::unique_ptr<AudioRecording> recordingAudio_;
+#else
+    std::unique_ptr<MicrophoneRecording> recordingAudio_;
+#endif
+    void showRecorder();
+    void acceptRecording(std::shared_ptr<AudioFile> audio);
     std::string openingName_;
     bool pasteFilePath_ = false;
     bool exportPathPopup_ = false, selectionExport_ = false, insertSilencePopup_ = false;
@@ -78,6 +95,48 @@ private:
     std::shared_ptr<const Timeline> cleanupBase_;
     std::shared_ptr<Timeline> cleanupPreview_;
     float gainDb_ = 0, volumeDb_ = -2, verticalZoom_ = 1;
+    bool stretchMode_ = false, stretchSnap_ = true, stretchPopup_ = false;
+    double stretchBpm_ = 120, stretchBpmInput_ = 120;
+    int stretchDragging_ = -1, stretchContextAnchor_ = -1;
+    double stretchDragOffset_ = 0, stretchContextFrame_ = 0;
+    std::unique_ptr<PitchTimeState> stretchDrag_;
+    std::shared_ptr<Timeline> stretchAudition_;
+    PitchTimeRenderQueue pitchTimeRenderer_;
+    std::uint64_t pitchTimeRevision_ = 0;
+    std::string rhythmStatus_;
+    std::array<ImVec2, 5> stretchControlPositions_{}; // logical positions for UI diagnostics
+    bool pitchPopup_ = false;
+    PitchSettings pitchInput_;
+    std::array<ImVec2, 7> pitchControlPositions_{};
+    bool pitchView_ = false, pitchSnap_ = true;
+    int pitchNoteSelected_ = -1, pitchNoteDragging_ = -1;
+    using NoteKey = PitchTimeState::NoteKey;
+    std::set<NoteKey> pitchSelection_, pitchMarqueeBase_, pitchMarqueeBefore_;
+    NoteKey pitchSelectionAnchor_{0, -1};
+    NoteKey pitchMarqueeAnchor_{0, -1};
+    bool pitchSplitMode_ = false, pitchMarquee_ = false, pitchDragMoved_ = false;
+    ImVec2 pitchMarqueeStart_{};
+    float pitchVibratoInput_ = 100;
+    bool pitchVibratoMixed_ = false;
+    bool pitchVibratoEditing_ = false, pitchVibratoCancelled_ = false;
+    std::shared_ptr<const Timeline> pitchVibratoBase_;
+    std::set<NoteKey> pitchVibratoSelection_;
+    float harmonyInterval_ = 7, harmonyLevel_ = 35;
+    int harmonySelected_ = -1, harmonyLevelVoice_ = -1;
+    bool harmonyLevelEditing_ = false, harmonyLevelCancelled_ = false;
+    std::shared_ptr<const Timeline> harmonyLevelBase_;
+    float pitchDragY_ = 0;
+    double pitchDragShift_ = 0, pitchDragOriginal_ = 0;
+    double pitchLow_ = 48, pitchHigh_ = 84;
+    float pitchStep_ = 1;
+    std::shared_ptr<const Timeline> pitchDragBase_;
+    std::vector<ImVec2> noteControlPositions_ = std::vector<ImVec2>(13);
+    std::vector<NoteKey> pitchContextNotes_;
+    std::weak_ptr<const Timeline> pitchContextBase_;
+    ImVec2 pitchPlotMin_{}, pitchPlotMax_{};
+    float pitchRulerY_ = 0;
+    struct NotePosition { ImVec2 centre; float height; };
+    std::vector<NotePosition> notePositions_;
     int exportFormat_ = 1;
     std::string status_ = "Ready", error_, title_ = "Untitled";
     ImFont* bodyFont_ = nullptr;
@@ -127,7 +186,7 @@ private:
     bool selected() const { return first() < last(); }
     Frame selectionExtent() const { const auto t = document_.timeline(); return std::max(t ? t->frames : Frame(0), last()); }
     void openNow(const std::filesystem::path& path);
-    void acceptFile(std::shared_ptr<AudioFile> file, const std::filesystem::path& path);
+    void acceptFile(std::shared_ptr<AudioFile> file, const std::filesystem::path& path, bool saved = true);
     void openDialog(bool pasteFromFile = false);
     void exportDialog(bool selectionOnly = false);
     void exportTo(const std::filesystem::path& path, bool selectionOnly = false);
@@ -139,6 +198,26 @@ private:
     void prepareCleanup(bool apply);
     void resetCleanup();
     void previewCleanup();
+    void stretchControls();
+    void openPitch();
+    void pitchControls();
+    void pitchEditor(ImVec2 pos, ImVec2 size);
+    void detectNotes();
+    void correctNotes(bool reset);
+    void syncPitchSelection();
+    void selectAllNotes();
+    void setNoteVibrato();
+    void addHarmony();
+    void removeHarmonyNotes();
+    void setHarmonyLevel();
+    void splitPitchNote(std::size_t index, Frame sourceFrame);
+    void fitNotes();
+    void togglePitchView();
+    void beatRuler(ImVec2 pos, float width);
+    void applyPitchTime(PitchTimeState map, const std::string& label, bool renderAudio = true, bool auditioned = false, std::function<void()> afterCommit = {});
+    void detectRhythm(bool anchors);
+    void addStretchAnchor(double frame);
+    void auditionStretch(std::shared_ptr<const Timeline> timeline);
     void snapSelection(bool movingEdgeOnly = false);
     Frame edgeFrames() const;
     void startJob(const std::string& label, std::function<void(std::stop_token)> task, std::function<void()> done = {}, std::function<void()> retry = {});

@@ -1,4 +1,5 @@
 #include "processing.hpp"
+#include "pitch_time.hpp"
 #include <algorithm>
 #include <cmath>
 #include <numbers>
@@ -13,6 +14,7 @@ std::shared_ptr<Timeline> mixAudio(const Timeline& source, const Timeline& clipb
     if (first < 0 || last <= first || clipboard.frames <= 0)
         throw std::runtime_error("Select a range and copy some audio before pasting into it.");
     const Frame length = std::min(last - first, clipboard.frames), end = first + length;
+    resolvePitchTime(source, progress, stop); resolvePitchTime(clipboard, progress, stop);
     auto rendered = AudioFile::render(length, source.sampleRate, source.channels,
         [&](Frame at, Frame count, float* block) {
             for (Frame i = 0; i < count; ++i) for (unsigned c = 0; c < source.channels; ++c) {
@@ -43,7 +45,9 @@ std::shared_ptr<Timeline> processAudio(const Timeline& source, Frame first, Fram
     if (first == last) throw std::runtime_error("Select some audio to process.");
     auto cancelled = [&] { if (stop.stop_requested()) throw std::runtime_error("Processing cancelled."); };
     cancelled();
+    resolvePitchTime(source, progress, stop);
     auto result = std::make_shared<Timeline>(source);
+    result->pitchTime.reset();
     auto head = source.slice(0, first), tail = source.slice(last, source.frames);
     std::array<double, 2> mean{}, compensation{};
     if (settings.kind == Cleanup::Normalize || settings.kind == Cleanup::RemoveDC) {

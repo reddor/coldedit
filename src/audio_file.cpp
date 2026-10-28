@@ -1,4 +1,6 @@
 #include "audio_file.hpp"
+#include "pitch_time.hpp"
+#include "waveform.hpp"
 #include "codecs.hpp"
 #include <algorithm>
 #include <cmath>
@@ -64,6 +66,86 @@ struct AudioFile::Mapping {
 };
 static std::uint16_t u16(const std::uint8_t* p) { return std::uint16_t(p[0] | (p[1] << 8)); }
 static std::uint32_t u32(const std::uint8_t* p) { return std::uint32_t(p[0]) | (std::uint32_t(p[1]) << 8) | (std::uint32_t(p[2]) << 16) | (std::uint32_t(p[3]) << 24); }
+
+struct AudioRecording::State {
+    unsigned rate, channels;
+    Frame count = 0;
+    bool finished = false;
+#ifdef __EMSCRIPTEN__
+    std::shared_ptr<AudioFile> audio;
+#else
+    TemporaryAudio temp{"record"};
+    std::ofstream output;
+#endif
+    State(unsigned r, unsigned c) : rate(r), channels(c) {
+#ifdef __EMSCRIPTEN__
+        audio = std::shared_ptr<AudioFile>(new AudioFile);
+        audio->mapping_ = std::make_unique<AudioFile::Mapping>();
+#else
+        output.open(temp.file, std::ios::binary);
+        if (!output) throw std::runtime_error("Cannot create recording storage. Check temporary disk space.");
+#endif
+    }
+};
+AudioRecording::AudioRecording(unsigned rate, unsigned channels) {
+    if (rate < 1000 || rate > 768000 || channels < 1 || channels > 2)
+        throw std::runtime_error("Recording requires a valid sample rate and mono or stereo audio.");
+    state_ = std::make_unique<State>(rate, channels);
+}
+AudioRecording::~AudioRecording() = default;
+Frame AudioRecording::frames() const { return state_->count; }
+void AudioRecording::append(const float* samples, unsigned count) {
+    auto& s = *state_;
+    if (s.finished) throw std::runtime_error("Recording has already finished.");
+    if (!count) return;
+    if (!samples) throw std::runtime_error("Missing recording samples.");
+    const auto written = std::uint64_t(s.count) * s.channels * sizeof(float);
+    const auto bytes = std::uint64_t(count) * s.channels * sizeof(float);
+    if (bytes > storageLimit - written) throw std::runtime_error("Recording reached this system's storage limit.");
+    for (std::uint64_t i = 0; i < std::uint64_t(count) * s.channels; ++i)
+        if (!std::isfinite(samples[i])) throw std::runtime_error("The recording device supplied invalid audio.");
+#ifdef __EMSCRIPTEN__
+    auto& m = *s.audio->mapping_;
+    if (written + bytes > m.size) {
+        const auto available = web::audioLimit.load() - std::min(web::audioLimit.load(), web::audioBytes.load() - m.reservation.bytes);
+        const auto next = std::max(written + bytes, std::min(available, std::max<std::uint64_t>(65536, m.size + m.size / 2)));
+        const auto previous = m.reservation.bytes;
+        m.reservation.resize(next);
+        try {
+            auto storage = std::make_unique_for_overwrite<std::uint8_t[]>(std::size_t(next));
+            if (written) std::memcpy(storage.get(), m.bytes, std::size_t(written));
+            m.storage = std::move(storage); m.bytes = m.storage.get(); m.size = std::size_t(next);
+        } catch (...) { m.reservation.resize(previous); throw; }
+    }
+    std::memcpy(m.storage.get() + written, samples, std::size_t(bytes));
+#else
+    s.output.write(reinterpret_cast<const char*>(samples), std::streamsize(bytes));
+    if (!s.output) throw std::runtime_error("Recording stopped: cannot write audio. Check temporary disk space.");
+#endif
+    s.count += count;
+}
+std::shared_ptr<AudioFile> AudioRecording::finish() {
+    auto& s = *state_;
+    if (s.finished) throw std::runtime_error("Recording has already finished.");
+    if (!s.count) throw std::runtime_error("No audio was recorded. Try recording for a little longer.");
+#ifdef __EMSCRIPTEN__
+    auto a = s.audio;
+    a->data_ = a->mapping_->bytes; a->frames = s.count;
+    a->sampleRate = s.rate; a->channels = s.channels; a->bits = 32; a->floating = true;
+    a->blockAlign_ = s.channels * 4; a->fileBytes = std::uint64_t(s.count) * a->blockAlign_;
+    a->peakThread_ = std::jthread([ptr = a.get()](std::stop_token stop) { ptr->buildPeaks(stop); });
+    s.audio.reset();
+#else
+    // A failed append may have left a partial frame on disk; keep the complete prefix.
+    s.output.clear(); s.output.flush();
+    if (!s.output) throw std::runtime_error("Cannot flush recorded audio. Check temporary disk space.");
+    s.output.close();
+    std::filesystem::resize_file(s.temp.file, std::uint64_t(s.count) * s.channels * 4);
+    auto a = AudioFile::mapFloat(s.temp.file, s.count, s.rate, s.channels, {});
+    a->temporaryDirectory_ = s.temp.directory; s.temp.directory.clear();
+#endif
+    s.finished = true; return a;
+}
 
 std::shared_ptr<AudioFile> AudioFile::map(const std::filesystem::path& p) {
     auto a = std::shared_ptr<AudioFile>(new AudioFile);
@@ -315,6 +397,13 @@ void AudioFile::parse() {
 
 float AudioFile::sample(Frame f, unsigned c) const noexcept {
     if (f < 0 || f >= frames || c >= channels) return 0;
+    if (pitchTimeState_) {
+        if (auto result = pitchTimeResult_.load()) return result->sample(f, c);
+        const double position = pitchTimeState_->time.sourceAt(double(f));
+        const Frame a = Frame(std::floor(position));
+        return float(std::lerp(double(pitchTimeState_->source->sample(a, c)),
+            double(pitchTimeState_->source->sample(a + 1, c)), position - double(a)));
+    }
     const auto* p = data_ + std::size_t(f) * blockAlign_ + c * (bits / 8);
     if (floating) { float v; std::memcpy(&v, p, 4); return std::isfinite(v) ? v : 0.f; }
     if (bits == 8) return (float(p[0]) - 128.f) / 128.f;
@@ -362,9 +451,45 @@ void AudioFile::buildPeaks(std::stop_token stop) {
     } catch (...) { progress_.store(-1); } // Raw-detail view remains usable if cache allocation fails.
 }
 
-void AudioFile::waitForPeaks() { if (peakThread_.joinable()) peakThread_.join(); }
+void AudioFile::waitForPeaks() {
+    if (pitchTimeState_) for (const auto& p : pitchTimeState_->source->pieces) { if (p.source) p.source->waitForPeaks(); }
+    else if (peakThread_.joinable()) peakThread_.join();
+}
+bool AudioFile::peaksReady() const noexcept {
+    if (pitchTimeState_) {
+        if (auto result = pitchTimeResult_.load()) return result->peaksReady();
+        return waveformBuild(pitchTimeState_->source.get()).ready;
+    }
+    return ready_.load(std::memory_order_acquire);
+}
+float AudioFile::peakProgress() const noexcept {
+    if (pitchTimeState_) {
+        if (auto result = pitchTimeResult_.load()) return result->peakProgress();
+        const auto state = waveformBuild(pitchTimeState_->source.get());
+        return state.ready || state.building ? state.progress : -1;
+    }
+    return progress_.load();
+}
+static std::atomic<std::uint64_t> pitchTimeChanges{0};
+std::uint64_t AudioFile::pitchTimeRevision() { return pitchTimeChanges.load(); }
+std::shared_ptr<AudioFile> AudioFile::pitchTimePreview(const PitchTimeState& map) {
+    map.validate(); auto audio = std::shared_ptr<AudioFile>(new AudioFile);
+    audio->pitchTimeState_ = std::make_shared<PitchTimeState>(map);
+    audio->frames = map.time.frames(); audio->sampleRate = map.source->sampleRate; audio->channels = map.source->channels;
+    audio->bits = 32; audio->floating = true; audio->format = "Pitch/time preview";
+    return audio;
+}
+void AudioFile::publishPitchTime(std::shared_ptr<AudioFile> result) {
+    if (!pitchTimeState_ || !result || result->frames != frames || result->sampleRate != sampleRate || result->channels != channels)
+        throw std::runtime_error("Stretch render does not match its preview.");
+    std::lock_guard lock(pitchTimePublishMutex_);
+    if (pitchTimeResult_.load()) return;
+    pitchTimeOwner_ = std::move(result);
+    pitchTimeResult_.store(pitchTimeOwner_.get(), std::memory_order_release); pitchTimeChanges.fetch_add(1);
+}
 
 Peak AudioFile::peak(Frame first, Frame last, unsigned c) const noexcept {
+    if (pitchTimeState_) return c < channels ? mixPeak(first, last, c == 0 ? 1 : 0, c == 1 ? 1 : 0) : Peak{};
     return c < channels ? cachedPeak(first, last, c) : Peak{};
 }
 float AudioFile::peakSample(Frame f, unsigned c) const noexcept {
@@ -372,6 +497,13 @@ float AudioFile::peakSample(Frame f, unsigned c) const noexcept {
     return float((double(sample(f, 0)) + (c == 2 ? 1 : -1) * double(sample(f, 1))) * .5);
 }
 Peak AudioFile::mixPeak(Frame first, Frame last, double left, double right) const noexcept {
+    if (pitchTimeState_) {
+        if (auto result = pitchTimeResult_.load()) return result->mixPeak(first, last, left, right);
+        first = std::clamp(first, Frame(0), frames); last = std::clamp(last, first, frames);
+        if (first == last) return {};
+        return pitchTimeState_->source->mixPeak(Frame(std::floor(pitchTimeState_->time.sourceAt(double(first)))),
+            Frame(std::ceil(pitchTimeState_->time.sourceAt(double(last - 1)))) + 1, left, right);
+    }
     if (channels == 1) right = 0;
     unsigned c = 0; double gain = left;
     if (left == 0) { c = 1; gain = right; }

@@ -567,11 +567,54 @@ static void interactionTests() {
         range.update(-500, anchor, head); CHECK(anchor == 0 && head == 1000);
     }
 }
+static void recordingTests() {
+    throws([] { AudioRecording invalid(0, 1); });
+    throws([] { AudioRecording invalid(48000, 3); });
+    AudioRecording empty(48000, 1);
+    throws([&] { empty.finish(); });
+    for (unsigned channels : {1u, 2u}) {
+        std::shared_ptr<AudioFile> audio;
+        std::filesystem::path stored;
+        constexpr unsigned count = 12345;
+        std::vector<float> samples(count * channels);
+        for (unsigned i = 0; i < samples.size(); ++i) samples[i] = float(int(i % 199) - 99) / 64;
+        {
+            AudioRecording take(44100, channels);
+            take.append(nullptr, 0);
+            take.append(samples.data(), 3);
+            take.append(samples.data() + 3 * channels, count - 3);
+            CHECK(take.frames() == count);
+            float invalid[] = {std::numeric_limits<float>::infinity(), 0};
+            throws([&] { take.append(invalid, 1); });
+            CHECK(take.frames() == count);
+            audio = take.finish(); stored = audio->path;
+            throws([&] { take.finish(); });
+            throws([&] { take.append(samples.data(), 1); });
+        }
+        CHECK(audio->sampleRate == 44100 && audio->channels == channels && audio->frames == count);
+        for (unsigned f = 0; f < count; ++f) for (unsigned c = 0; c < channels; ++c)
+            near(audio->sample(f, c), samples[f * channels + c]);
+        audio->waitForPeaks(); CHECK(audio->peaksReady());
+        {
+            Document d; d.open(audio, false); CHECK(d.dirty());
+            d.effect(0, 100, Effect::Reverse); CHECK(d.undo()); CHECK(d.dirty());
+            d.markSaved(); CHECK(!d.dirty());
+            const auto exported = root / ("recorded-" + std::to_string(channels) + ".wav");
+            exportWav(*d.timeline(), exported, ExportFormat::Float32);
+            auto reopened = AudioFile::open(exported); CHECK(reopened->frames == count);
+            near(reopened->sample(count - 1, channels - 1), samples.back());
+        }
+        audio.reset();
+#ifndef __EMSCRIPTEN__
+        CHECK(!std::filesystem::exists(stored));
+#endif
+    }
+}
 int main() {
     root = std::filesystem::current_path() / ("coldedit-tests-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::create_directories(root);
     try {
-        parserTests(); peakTests(); waveformTests(); documentTests(); fadeAndSilenceTests(); cleanupTests(); mixTests(); exportTests(); memoryRecoveryTests(); viewportTests(); interactionTests();
+        parserTests(); peakTests(); waveformTests(); documentTests(); fadeAndSilenceTests(); cleanupTests(); mixTests(); exportTests(); memoryRecoveryTests(); viewportTests(); interactionTests(); recordingTests();
         web::checkInput(web::inputLimit); ++checks;
         throws([] { web::checkInput(web::inputLimit + 1); });
         for (unsigned bits : {16u, 24u, 32u}) for (unsigned channels : {1u, 2u}) {
